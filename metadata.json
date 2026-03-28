@@ -1,0 +1,5 @@
+{
+  "name": "Study Prep",
+  "description": "Transform PDFs into structured weekly study plans using AI. Split chapters and schedule your learning.",
+  "requestFramePermissions": []
+}
