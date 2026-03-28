@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import main  # noqa: E402
+from models.schemas import Chapter, StudyPlan  # noqa: E402
+
+
+def make_plan(title: str, content: str = "content") -> StudyPlan:
+    return StudyPlan(
+        chapters=[
+            Chapter(
+                id="T1-C1",
+                title=title,
+                summary=f"{title} summary",
+                topic="Algemeen",
+                content=content,
+            )
+        ],
+        topics=["Algemeen"],
+        masterStudyMap="| onderwerp | chapter |",
+        gptSystemInstructions="Use the KB.",
+    )
+
+
+def parse_sse_events(text: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    for block in text.split("\n\n"):
+        if not block.strip():
+            continue
+
+        event_type = ""
+        data = ""
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_type = line[7:].strip()
+            elif line.startswith("data: "):
+                data = line[6:]
+
+        if event_type and data:
+            events.append((event_type, json.loads(data)))
+
+    return events
+
+
+def test_process_simple_returns_single_file_cache(monkeypatch):
+    cached_plan = make_plan("Cached")
+
+    monkeypatch.setattr(main, "get_cached_result", lambda _: cached_plan)
+    monkeypatch.setattr(main, "process_document", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "generate_study_plan", lambda *args, **kwargs: None)
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/process-simple",
+        files={"files": ("cached.txt", b"cached", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["plan"]["chapters"][0]["title"] == "Cached"
+
+
+def test_process_simple_multi_file_skips_cache_short_circuit(monkeypatch):
+    cache_calls = {"count": 0}
+    processed_files: list[str] = []
+
+    def fake_get_cached_result(_file_hash):
+        cache_calls["count"] += 1
+        return make_plan("Cached")
+
+    async def fake_process_document(_file_path, filename, on_progress=None):
+        processed_files.append(filename)
+        return f"# processed {filename}"
+
+    async def fake_generate(markdown_content, doc_type="auto", on_progress=None, max_retries=3):
+        return make_plan("Generated", markdown_content)
+
+    monkeypatch.setattr(main, "get_cached_result", fake_get_cached_result)
+    monkeypatch.setattr(main, "process_document", fake_process_document)
+    monkeypatch.setattr(main, "generate_study_plan", fake_generate)
+    monkeypatch.setattr(main, "save_to_cache", lambda *_args, **_kwargs: None)
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/process-simple",
+        files=[
+            ("files", ("first.txt", b"one", "text/plain")),
+            ("files", ("second.txt", b"two", "text/plain")),
+        ],
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["plan"]["chapters"][0]["title"] == "Generated"
+    assert processed_files == ["first.txt", "second.txt"]
+    assert cache_calls["count"] == 0
+
+
+def test_process_stream_forwards_document_and_ai_progress(monkeypatch):
+    async def fake_process_document(_file_path, filename, on_progress=None):
+        if on_progress:
+            await on_progress("document", 45, f"extracting {filename}")
+        return f"# processed {filename}"
+
+    async def fake_generate(markdown_content, doc_type="auto", on_progress=None, max_retries=3):
+        if on_progress:
+            await on_progress("ai", 80, "building plan")
+        return make_plan("Generated", markdown_content)
+
+    monkeypatch.setattr(main, "get_cached_result", lambda _: None)
+    monkeypatch.setattr(main, "process_document", fake_process_document)
+    monkeypatch.setattr(main, "generate_study_plan", fake_generate)
+    monkeypatch.setattr(main, "save_to_cache", lambda *_args, **_kwargs: None)
+
+    client = TestClient(main.app)
+    with client.stream(
+        "POST",
+        "/api/process",
+        files={"files": ("notes.txt", b"hello", "text/plain")},
+    ) as response:
+        text = "".join(response.iter_text())
+
+    events = parse_sse_events(text)
+    progress_messages = [payload["message"] for event_type, payload in events if event_type == "progress"]
+    terminal_events = [event_type for event_type, _payload in events if event_type in {"result", "error"}]
+
+    assert response.status_code == 200
+    assert any("extracting notes.txt" in message for message in progress_messages)
+    assert any("building plan" in message for message in progress_messages)
+    assert terminal_events == ["result"]
+
+
+def test_process_stream_emits_single_error_terminal_event(monkeypatch):
+    async def fake_process_document(_file_path, _filename, on_progress=None):
+        if on_progress:
+            await on_progress("document", 10, "starting")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main, "get_cached_result", lambda _: None)
+    monkeypatch.setattr(main, "process_document", fake_process_document)
+
+    client = TestClient(main.app)
+    with client.stream(
+        "POST",
+        "/api/process",
+        files={"files": ("broken.txt", b"hello", "text/plain")},
+    ) as response:
+        text = "".join(response.iter_text())
+
+    events = parse_sse_events(text)
+    terminal_events = [event_type for event_type, _payload in events if event_type in {"result", "error"}]
+
+    assert response.status_code == 200
+    assert terminal_events == ["error"]
+    assert all(event_type != "result" for event_type, _payload in events)

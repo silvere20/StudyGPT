@@ -1,59 +1,98 @@
-# Document Processor & Study Plan Generator
+# StudyFlow AI
 
-Hallo Claude! De gebruiker wil deze applicatie lokaal installeren, configureren en verder ontwikkelen met jouw hulp. Hier is een overzicht van het project en instructies voor de setup.
+Verander je documenten in een interactieve AI tutor. Upload PDF's, slides, Word-documenten en meer, en ontvang een gestructureerd studieplan met GPT-instructies.
 
-## Overzicht van de Applicatie
+Bij zeer grote uploads schakelt de backend automatisch over op batchverwerking, zodat OpenAI TPM-/request-limieten minder snel de hele run blokkeren.
+De weekindeling wordt daarna apart logisch en zo gelijkmatig mogelijk gepland op basis van de gegenereerde hoofdstukken, in plaats van via een vaste lokale hoofdstukken-per-week regel.
+Extreem grote scanpagina's worden daarnaast automatisch in kleinere OCR-tegels verwerkt, zodat Tesseract niet crasht op gigantische tussenafbeeldingen.
 
-Dit is een React + Vite applicatie (geschreven in TypeScript) die grote documenten (PDF, DOCX, PPTX, XLSX, TXT, MD) verwerkt en analyseert met behulp van AI om een "Master Study Plan" te genereren. 
+## Vereisten
 
-De applicatie heeft de volgende kernfunctionaliteiten:
-1. **Bestandsverwerking & Chunking:** Grote PDF's worden slim opgesplitst in kleinere "chunks" op basis van semantische grenzen (hoofdstukken) en bestandsgrootte, zodat ze binnen de limieten van de AI API's passen (`src/lib/pdfSplitter.ts`).
-2. **Geavanceerde OCR Preprocessing:** Scans en afbeeldingen in PDF's kunnen worden verbeterd met contrast, grayscale, ruisreductie, verscherping en adaptieve drempelwaarden (`src/lib/pdfPreprocessor.ts`).
-3. **AI Model Provider Switch:** De gebruiker kan kiezen tussen **Google Gemini** (standaard) en **OpenAI (GPT-4o)** voor de analyse (`src/lib/ai.ts`).
-4. **UI:** Een moderne, responsieve interface gebouwd met Tailwind CSS en Framer Motion (`src/App.tsx`).
+- **Node.js** 18+
+- **Python** 3.11+
+- **Tesseract OCR** 5+
+- **OpenAI API key** ([verkrijg hier](https://platform.openai.com/api-keys))
 
-## Installatie Instructies (Voor Claude & Gebruiker)
+## Installatie
 
-Volg deze stappen om het project lokaal te draaien:
+### 1. Frontend dependencies
 
-### 1. Vereisten
-- Node.js (v18 of hoger aanbevolen)
-- npm of yarn
-
-### 2. Afhankelijkheden Installeren
-Open een terminal in de root van het project en run:
 ```bash
 npm install
 ```
 
-### 3. Omgevingsvariabelen (Environment Variables) Instellen
-De applicatie maakt gebruik van AI API's. Je moet de API keys instellen in een `.env` bestand.
+### 2. Python backend
 
-1. Kopieer het `.env.example` bestand naar een nieuw bestand genaamd `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-2. Open het `.env` bestand en vul de volgende keys in:
-   - `VITE_GEMINI_API_KEY`: Jouw Google Gemini API key (vereist voor de Gemini provider en voor semantische PDF splitsing).
-   - `VITE_OPENAI_API_KEY`: Jouw OpenAI API key (vereist als je de OpenAI provider selecteert in de UI).
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-*Let op: Omdat dit een Vite applicatie is die lokaal draait, moeten de variabelen beginnen met `VITE_` om toegankelijk te zijn in de browser via `import.meta.env`.*
+Installeer daarnaast lokaal Tesseract als die nog niet aanwezig is:
 
-### 4. Applicatie Starten
-Start de development server:
+```bash
+brew install tesseract
+```
+
+### 3. API key instellen
+
+Maak een `.env` bestand in de `backend/` map:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+Vul je OpenAI API key in het `.env` bestand in.
+
+## Starten
+
+Start beide servers tegelijk:
+
 ```bash
 npm run dev
 ```
-De applicatie is nu lokaal beschikbaar (meestal op `http://localhost:3000` of `http://localhost:5173`).
 
-## Architectuur & Belangrijke Bestanden
+Voor dashboard-/launcherachtige omgevingen zonder file watchers:
 
-- **`src/App.tsx`**: De hoofdcomponent. Bevat de UI, state management (inclusief de toggle voor `aiProvider`), en de verwerkingswachtrij (queue).
-- **`src/lib/ai.ts`**: Bevat de logica voor de AI API calls. Hierin staan de functies `processDocument` (voor Gemini) en `processDocumentOpenAI` (voor OpenAI).
-- **`src/lib/pdfSplitter.ts`**: Bevat de logica om grote PDF's op te splitsen. Gebruikt `pdf-lib` en `pdfjs-dist`.
-- **`src/lib/pdfPreprocessor.ts`**: Bevat de geavanceerde OCR preprocessing functionaliteit (canvas manipulatie).
+```bash
+npm run dashboard
+```
 
-## Opmerking over OpenAI Integratie
-De OpenAI integratie in `src/lib/ai.ts` is momenteel geïmplementeerd door tekst uit PDF's te extraheren via `pdfjs-dist` en dit als tekst naar `gpt-4o` te sturen, of door afbeeldingen als base64 te sturen. Dit is omdat de OpenAI Chat Completions API geen directe PDF-bestanden accepteert in de `messages` array (in tegenstelling tot Gemini's File API). Als de gebruiker de OpenAI integratie verder wil verbeteren (bijv. via de OpenAI Assistants API met File Search), kun jij (Claude) hen daar verder bij helpen!
+Of apart:
 
-Succes met het verder ontwikkelen van deze applicatie!
+```bash
+# Terminal 1: Frontend
+npm run dev:frontend
+
+# Terminal 2: Backend
+./backend/.venv/bin/python -m uvicorn --app-dir backend main:app --reload --port 8000
+```
+
+Open http://127.0.0.1:3000 in je browser.
+
+## Architectuur
+
+- **Frontend**: React + TypeScript + Vite (poort 3000)
+- **Backend**: Python FastAPI (poort 8000)
+- **OCR**: lokale `tesseract` CLI (300 DPI voor gescande PDF's en afbeeldingen)
+- **Documentverwerking**: docling (IBM) - PDF, DOCX, PPTX, XLSX
+- **AI**: OpenAI GPT-4o
+
+## Testen
+
+```bash
+npm run test:frontend
+npm run test:backend
+```
+
+## Belangrijke Bestanden
+
+- `src/App.tsx` - Hoofdcomponent (UI)
+- `src/api/client.ts` - API client voor backend communicatie
+- `backend/main.py` - FastAPI server met endpoints
+- `backend/services/document.py` - docling documentverwerking
+- `backend/services/ocr.py` - Tesseract OCR integratie (300 DPI)
+- `backend/services/ai.py` - OpenAI GPT-4o integratie
+- `backend/services/cache.py` - SHA-256 file-hash caching

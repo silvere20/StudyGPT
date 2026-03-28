@@ -1,29 +1,31 @@
 {
-  "name": "react-example",
+  "name": "studyflow-ai",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "concurrently --names \"frontend,backend\" --prefix-colors \"cyan,yellow\" \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev:frontend": "vite --host 127.0.0.1 --port 3000",
+    "dev:backend": "cd backend && .venv/bin/python -m uvicorn main:app --reload --port 8000",
+    "dashboard": "concurrently --names \"frontend,backend\" --prefix-colors \"cyan,yellow\" \"npm run dashboard:frontend\" \"npm run dashboard:backend\"",
+    "dashboard:frontend": "vite --host 127.0.0.1 --port 3000",
+    "dashboard:backend": "./backend/.venv/bin/python -m uvicorn --app-dir backend main:app --port 8000",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "npm run test:frontend && npm run test:backend",
+    "test:frontend": "vitest run",
+    "test:backend": "backend/.venv/bin/python -m pytest backend/tests"
   },
   "dependencies": {
-    "@google/genai": "^1.29.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",
-    "dotenv": "^17.2.3",
-    "express": "^4.21.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
-    "openai": "^6.33.0",
-    "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.5.207",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-dropzone": "^15.0.0",
@@ -31,16 +33,17 @@
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.5.0",
-    "tesseract.js": "^7.0.0",
     "vite": "^6.2.0"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
+    "@testing-library/react": "^16.3.0",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.0",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "vitest": "^3.2.4"
   }
 }

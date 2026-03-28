@@ -2,7 +2,16 @@ node_modules/
 build/
 dist/
 coverage/
+.pytest_cache/
 .DS_Store
 *.log
 .env*
 !.env.example
+!backend/.env.example
+
+# Python
+backend/__pycache__/
+backend/.venv/
+backend/cache/*.json
+__pycache__/
+*.pyc
