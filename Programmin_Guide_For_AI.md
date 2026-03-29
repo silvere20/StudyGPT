@@ -56,6 +56,14 @@ Bij extreem grote scanpagina's splitst de OCR-laag PDF-pagina's en afbeeldingen 
 
 ## Wijzigingslog
 
+### 2026-03-29 - OCR parallellisatie via ProcessPoolExecutor
+- **Bestand:** [backend/services/ocr.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/services/ocr.py)
+- **Doel:** OCR-verwerkingstijd reduceren bij multi-page gescande PDFs.
+- **Wijzigingen:** `_ocr_executor = ProcessPoolExecutor(max_workers=4)` toegevoegd; nieuwe top-level worker `_ocr_page_worker(args)` verwerkt één pagina synchroon met alle lokale imports voor pickle-compatibiliteit; `ocr_pdf` gebruikt nu `loop.run_in_executor` per pagina en `asyncio.as_completed` voor parallelle uitvoering; volgorde gegarandeerd via `page_index`-sortering na completion.
+- **Gedragsimpact:** verwerkingstijd schaalt nu sublineair met aantal pagina's bij multi-core hardware; GIL-vrij dankzij ProcessPool.
+- **Testbewijs:** `test_ocr_pdf_respects_page_order` groen.
+- **Resterend risico:** `max_workers=4` is hardcoded; bij zware servers kan dit omhoog; op systemen met `spawn` start-methode (macOS standaard) is de opstarttijd van workers hoger dan bij `fork`.
+
 ### 2026-03-29 - Per-bestand extractie-cache toegevoegd
 - **Bestanden:** [backend/services/cache.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/services/cache.py), [backend/main.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/main.py), [backend/tests/test_main.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/tests/test_main.py)
 - **Doel:** herverwerking van al bekende bestanden vermijden bij multi-file uploads.

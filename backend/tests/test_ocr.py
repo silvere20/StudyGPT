@@ -1,10 +1,15 @@
 import asyncio
 import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import fitz
 from PIL import Image, ImageDraw
 
+import services.ocr as ocr_module
 from services.ocr import (
     MAX_OCR_TILE_HEIGHT,
     MAX_OCR_TILE_PIXELS,
@@ -12,6 +17,7 @@ from services.ocr import (
     _build_tile_boxes,
     is_scanned_pdf,
     ocr_image,
+    ocr_pdf,
 )
 
 
@@ -56,6 +62,36 @@ def test_ocr_image_returns_tesseract_stdout(monkeypatch, tmp_path: Path):
     )
 
     assert asyncio.run(ocr_image(str(image_path))) == "OCR TEST\nLineaire regressie"
+
+
+def test_ocr_pdf_respects_page_order(monkeypatch, tmp_path: Path):
+    """Pagina's worden parallel verwerkt maar de output staat altijd in volgorde."""
+    # Maak een 2-pagina PDF aan
+    pdf_path = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    for _ in range(2):
+        doc.new_page()
+    doc.save(pdf_path)
+    doc.close()
+
+    # Vervang de ProcessPoolExecutor door een ThreadPoolExecutor (geen pickle nodig)
+    monkeypatch.setattr(ocr_module, "_ocr_executor", ThreadPoolExecutor(max_workers=2))
+
+    # Vervang de worker door een simpele stub die (page_index, tekst) teruggeeft
+    monkeypatch.setattr(
+        ocr_module,
+        "_ocr_page_worker",
+        lambda args: (args[0], f"tekst pagina {args[0]}"),
+    )
+
+    result = asyncio.run(ocr_pdf(str(pdf_path)))
+
+    # Pagina 1 moet vóór Pagina 2 staan
+    pos_pagina_1 = result.find("Pagina 1")
+    pos_pagina_2 = result.find("Pagina 2")
+    assert pos_pagina_1 != -1, "Pagina 1 niet gevonden in output"
+    assert pos_pagina_2 != -1, "Pagina 2 niet gevonden in output"
+    assert pos_pagina_1 < pos_pagina_2, "Pagina 1 staat niet vóór Pagina 2"
 
 
 def test_build_tile_boxes_splits_extremely_large_images():

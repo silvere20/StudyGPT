@@ -1,3 +1,4 @@
+import asyncio
 import gc
 import logging
 import math
@@ -5,6 +6,7 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor
 
 import fitz  # pymupdf
 from PIL import Image
@@ -15,6 +17,8 @@ OCR_DPI = 300
 MAX_OCR_TILE_WIDTH = 4_500
 MAX_OCR_TILE_HEIGHT = 4_500
 MAX_OCR_TILE_PIXELS = 18_000_000
+
+_ocr_executor = ProcessPoolExecutor(max_workers=4)
 
 
 def is_scanned_pdf(file_path: str, threshold: int = 50) -> bool:
@@ -40,27 +44,177 @@ def is_scanned_pdf(file_path: str, threshold: int = 50) -> bool:
     return avg_chars < threshold and text_coverage < 0.5
 
 
-async def ocr_pdf(file_path: str, on_progress=None) -> str:
+def _ocr_page_worker(args: tuple) -> tuple[int, str]:
+    """Synchronous worker that OCRs a single PDF page inside a ProcessPoolExecutor.
+
+    All imports are local so the function is safely picklable across process
+    boundaries regardless of the multiprocessing start method (fork / spawn).
+    The PDF file is opened fresh in the worker because fitz objects cannot
+    be serialised.
+
+    Args:
+        args: (page_index, file_path, dpi, max_tile_width, max_tile_height, max_tile_pixels)
+
+    Returns:
+        (page_index, extracted_text)
     """
-    Run OCR on a scanned PDF at high quality.
-    Very large pages are rendered in smaller tiles so Tesseract never receives
-    a single giant PNG that exceeds Leptonica's limits.
+    import gc as _gc
+    import math as _math
+    import os as _os
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+
+    import fitz as _fitz
+    from PIL import Image as _Image
+
+    page_index, file_path, dpi, max_tile_width, max_tile_height, max_tile_pixels = args
+
+    # ── Local helpers (mirroring module-level helpers) ──────────────────────
+
+    def _iter_steps_local(total: int, step: int) -> Iterator[int]:
+        position = 0
+        while position < total:
+            yield position
+            position += step
+
+    def _page_pixel_size_local(width_points: float, height_points: float) -> tuple[int, int]:
+        scale = dpi / 72
+        return max(1, _math.ceil(width_points * scale)), max(1, _math.ceil(height_points * scale))
+
+    def _build_tile_boxes_local(width: int, height: int) -> list[tuple[int, int, int, int]]:
+        tile_width = min(width, max_tile_width)
+        tile_height = min(height, max_tile_height)
+        if tile_width * tile_height > max_tile_pixels:
+            tile_height = max(1, max_tile_pixels // tile_width)
+        boxes = []
+        for top in _iter_steps_local(height, tile_height):
+            for left in _iter_steps_local(width, tile_width):
+                right = min(width, left + tile_width)
+                bottom = min(height, top + tile_height)
+                boxes.append((left, top, right, bottom))
+        return boxes
+
+    def _pixel_box_to_pdf_rect_local(
+        page_rect: _fitz.Rect,
+        left_px: int,
+        top_px: int,
+        right_px: int,
+        bottom_px: int,
+    ) -> _fitz.Rect:
+        px_to_points = 72 / dpi
+        return _fitz.Rect(
+            page_rect.x0 + (left_px * px_to_points),
+            page_rect.y0 + (top_px * px_to_points),
+            page_rect.x0 + (right_px * px_to_points),
+            page_rect.y0 + (bottom_px * px_to_points),
+        )
+
+    def _normalize_local(result: object) -> str:
+        if isinstance(result, str):
+            return result.strip()
+        if not result:
+            return ""
+        lines: list[str] = []
+        for item in result:
+            text = str(item[0]).strip() if isinstance(item, tuple) else str(item).strip()
+            if text:
+                lines.append(text)
+        return "\n".join(lines)
+
+    def _run_tesseract_local(image: _Image.Image) -> str:
+        with _tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            image.save(tmp.name, "PNG")
+            tmp_path = tmp.name
+        try:
+            result = _subprocess.run(
+                ["tesseract", tmp_path, "stdout", "-l", "eng+nld", "--psm", "6"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            _os.unlink(tmp_path)
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or "Onbekende OCR-fout."
+            raise RuntimeError(f"Tesseract OCR mislukt: {stderr}")
+        return _normalize_local(result.stdout)
+
+    def _ocr_pil_local(image: _Image.Image) -> str:
+        width, height = image.size
+        tiles = _build_tile_boxes_local(width, height)
+        if len(tiles) == 1:
+            return _run_tesseract_local(image)
+        parts: list[str] = []
+        for box in tiles:
+            tile = image.crop(box)
+            try:
+                tile_text = _run_tesseract_local(tile)
+            finally:
+                tile.close()
+            if tile_text.strip():
+                parts.append(tile_text)
+        return "\n\n".join(parts).strip()
+
+    # ── Page processing ─────────────────────────────────────────────────────
+
+    doc = _fitz.open(file_path)
+    try:
+        page = doc[page_index]
+        width_px, height_px = _page_pixel_size_local(page.rect.width, page.rect.height)
+        tile_boxes = _build_tile_boxes_local(width_px, height_px)
+        page_text_parts: list[str] = []
+
+        for left_px, top_px, right_px, bottom_px in tile_boxes:
+            clip = _pixel_box_to_pdf_rect_local(
+                page.rect, left_px, top_px, right_px, bottom_px
+            )
+            pix = page.get_pixmap(dpi=dpi, clip=clip)
+            image = _Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            tile_text = _ocr_pil_local(image)
+            if tile_text.strip():
+                page_text_parts.append(tile_text)
+            del pix, image
+            _gc.collect()
+    finally:
+        doc.close()
+
+    return page_index, "\n\n".join(page_text_parts).strip()
+
+
+async def ocr_pdf(file_path: str, on_progress=None) -> str:
+    """Run OCR on a scanned PDF using a ProcessPoolExecutor.
+
+    Pages are processed in parallel (max_workers=4). Output is sorted by
+    original page index to guarantee reading order regardless of completion
+    order. Very large pages are rendered in smaller tiles inside each worker
+    so Tesseract never receives a single giant PNG that exceeds Leptonica's
+    limits.
     """
     doc = fitz.open(file_path)
     total_pages = doc.page_count
-    full_text = []
+    doc.close()  # workers reopen the file themselves
 
-    for i, page in enumerate(doc):
-        page_text = await _ocr_pdf_page(page)
-        full_text.append(f"--- Pagina {i + 1} ---\n{page_text}")
+    loop = asyncio.get_running_loop()
+    args_list = [
+        (i, file_path, OCR_DPI, MAX_OCR_TILE_WIDTH, MAX_OCR_TILE_HEIGHT, MAX_OCR_TILE_PIXELS)
+        for i in range(total_pages)
+    ]
 
-        gc.collect()
+    futures = [
+        loop.run_in_executor(_ocr_executor, _ocr_page_worker, args)
+        for args in args_list
+    ]
 
+    results: list[tuple[int, str]] = []
+    for i, future in enumerate(asyncio.as_completed(futures)):
+        page_index, page_text = await future
+        results.append((page_index, page_text))
         if on_progress:
             progress = int((i + 1) / total_pages * 100)
             await on_progress("ocr", progress, f"OCR pagina {i + 1}/{total_pages}...")
 
-    doc.close()
+    results.sort(key=lambda x: x[0])
+    full_text = [f"--- Pagina {idx + 1} ---\n{text}" for idx, text in results]
     return "\n\n".join(full_text)
 
 
@@ -69,43 +223,6 @@ async def ocr_image(file_path: str) -> str:
     with Image.open(file_path) as image:
         rgb_image = image.convert("RGB")
         return await _ocr_pil_image(rgb_image)
-
-
-async def _ocr_pdf_page(page: fitz.Page) -> str:
-    width_px, height_px = _page_pixel_size(page.rect.width, page.rect.height, OCR_DPI)
-    tile_boxes = _build_tile_boxes(width_px, height_px)
-    tile_count = len(tile_boxes)
-    page_text_parts: list[str] = []
-
-    if tile_count > 1:
-        logger.info(
-            "Rendering oversized PDF page as %s OCR tiles (%sx%s px at %s DPI)",
-            tile_count,
-            width_px,
-            height_px,
-            OCR_DPI,
-        )
-
-    for left_px, top_px, right_px, bottom_px in tile_boxes:
-        clip = _pixel_box_to_pdf_rect(
-            page.rect,
-            left_px,
-            top_px,
-            right_px,
-            bottom_px,
-            dpi=OCR_DPI,
-        )
-        pix = page.get_pixmap(dpi=OCR_DPI, clip=clip)
-        image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        tile_text = await _ocr_pil_image(image)
-
-        if tile_text.strip():
-            page_text_parts.append(tile_text)
-
-        del pix, image
-        gc.collect()
-
-    return "\n\n".join(page_text_parts).strip()
 
 
 async def _ocr_pil_image(image: Image.Image) -> str:
