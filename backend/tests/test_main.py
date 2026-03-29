@@ -199,6 +199,31 @@ def test_multi_file_uses_markdown_cache(monkeypatch):
     assert terminal_events == ["result"]
 
 
+def test_process_returns_error_when_semaphore_full(monkeypatch):
+    """Als de semaphore vol is, krijgt de client direct een SSE error-event."""
+    # Druk de semaphore leeg door _value direct op 0 te zetten (asyncio is single-threaded)
+    original_value = main._processing_semaphore._value
+    main._processing_semaphore._value = 0
+
+    try:
+        client = TestClient(main.app)
+        with client.stream(
+            "POST",
+            "/api/process",
+            files={"files": ("test.txt", b"inhoud", "text/plain")},
+        ) as response:
+            text = "".join(response.iter_text())
+    finally:
+        # Herstel de semaphore zodat andere tests niet worden beïnvloed
+        main._processing_semaphore._value = original_value
+
+    events = parse_sse_events(text)
+    error_events = [payload for event_type, payload in events if event_type == "error"]
+
+    assert len(error_events) == 1
+    assert "tegelijkertijd" in error_events[0]["message"]
+
+
 def test_process_stream_emits_single_error_terminal_event(monkeypatch):
     async def fake_process_document(_file_path, _filename, on_progress=None):
         if on_progress:

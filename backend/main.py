@@ -28,6 +28,8 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+_processing_semaphore = asyncio.Semaphore(3)
+
 T = TypeVar("T")
 ProgressCallback = Callable[[str, int, str], Awaitable[None]]
 
@@ -57,6 +59,23 @@ async def process_files(files: list[UploadFile] = File(...)):
     """
 
     async def event_stream():
+        # asyncio is single-threaded: checking _value and acquiring is atomic
+        # (no other coroutine runs between these two lines).  noqa: SLF001
+        if _processing_semaphore._value == 0:  # noqa: SLF001
+            yield _sse_event(
+                "error",
+                {
+                    "message": (
+                        "De server verwerkt al het maximale aantal bestanden "
+                        "tegelijkertijd. Probeer het over enkele seconden opnieuw."
+                    )
+                },
+            )
+            return
+
+        await _processing_semaphore.acquire()
+        acquired = True
+
         try:
             all_markdown = []
             total_files = len(files)
@@ -218,6 +237,9 @@ async def process_files(files: list[UploadFile] = File(...)):
                 "error",
                 {"message": f"Er is een fout opgetreden: {str(e)}"},
             )
+        finally:
+            if acquired:
+                _processing_semaphore.release()
 
     return StreamingResponse(
         event_stream(),

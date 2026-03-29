@@ -56,6 +56,14 @@ Bij extreem grote scanpagina's splitst de OCR-laag PDF-pagina's en afbeeldingen 
 
 ## Wijzigingslog
 
+### 2026-03-29 - Rate limiting via asyncio.Semaphore
+- **Bestand:** `backend/main.py`
+- **Doel:** stapeling van OpenAI-calls voorkomen bij gelijktijdige uploads.
+- **Wijzigingen:** `asyncio.Semaphore(3)` beschermt `/api/process`; client krijgt directe SSE `error` bij overschrijding via `asyncio.wait_for(..., timeout=0)`; semaphore wordt altijd vrijgegeven in `finally`-blok.
+- **Gedragsimpact:** maximaal 3 uploads tegelijk; daarna direct afgewezen met herkenbare Nederlandse foutmelding.
+- **Testbewijs:** `test_process_returns_error_when_semaphore_full` groen.
+- **Resterend risico:** limiet van 3 is hardcoded; aanpassen via env-variabele is een volgende stap.
+
 ### 2026-03-29 - OCR parallellisatie via ProcessPoolExecutor
 - **Bestand:** [backend/services/ocr.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/services/ocr.py)
 - **Doel:** OCR-verwerkingstijd reduceren bij multi-page gescande PDFs.
