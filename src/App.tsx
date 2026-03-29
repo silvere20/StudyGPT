@@ -13,9 +13,16 @@ import { ResultsContext } from './context/ResultsContext';
 import type { ResultsContextValue } from './context/ResultsContext';
 
 export default function App() {
-  const [plan, setPlan] = useState<StudyPlan | null>(null);
+  const [plan, setPlan] = useState<StudyPlan | null>(() => {
+    try {
+      const saved = localStorage.getItem('studyflow_plan');
+      return saved ? (JSON.parse(saved) as StudyPlan) : null;
+    } catch { return null; }
+  });
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [showSetup, setShowSetup] = useState(false);
+  const [showSetup, setShowSetup] = useState(() => {
+    try { return localStorage.getItem('studyflow_plan') !== null; } catch { return false; }
+  });
   const [showMapPreview, setShowMapPreview] = useState(false);
   const [expandedChapters, setExpandedChapters] = useState<Set<string>>(new Set());
   const [healthStatus, setHealthStatus] = useState<HealthStatus>('checking');
@@ -69,6 +76,25 @@ export default function App() {
     void refreshHealth();
   }, [refreshHealth]);
 
+  // Persist plan to localStorage; show startup toast when a saved plan is restored
+  useEffect(() => {
+    try {
+      if (plan) {
+        localStorage.setItem('studyflow_plan', JSON.stringify(plan));
+      } else {
+        localStorage.removeItem('studyflow_plan');
+      }
+    } catch { /* storage unavailable */ }
+  }, [plan]);
+
+  useEffect(() => {
+    if (plan) {
+      toast.info('Vorig studieplan geladen vanuit opslag.', { duration: 3000 });
+    }
+  // Only run once on mount — plan is intentionally omitted from deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const resetPlanState = useCallback(() => {
     setPlan(null);
     setShowSetup(false);
@@ -76,6 +102,7 @@ export default function App() {
     setExpandedChapters(new Set());
     setFilterQuery('');
     topicRefs.current.clear();
+    try { localStorage.removeItem('studyflow_plan'); } catch { /* storage unavailable */ }
   }, []);
 
   const onSuccess = useCallback((result: StudyPlan) => {
