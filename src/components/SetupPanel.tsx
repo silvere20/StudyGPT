@@ -1,8 +1,10 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Settings, Download, Eye, Copy, Check, Package, Loader2, Map as MapIcon, Info } from 'lucide-react';
+import { Settings, Download, Eye, Copy, Check, Package, Loader2, Map as MapIcon, Info, RotateCcw } from 'lucide-react';
 import { cn } from '../utils';
 import { LazyMarkdown } from './LazyMarkdown';
 import { useResultsContext } from '../context/ResultsContext';
+
+const TEMPLATE_VARS = ['{topic}', '{title}', '{summary}', '{content}'] as const;
 
 export function SetupPanel() {
   const {
@@ -15,7 +17,19 @@ export function SetupPanel() {
     onDownloadMap,
     onCopyInstructions,
     onToggleMapPreview,
+    promptTemplate,
+    onSetPromptTemplate,
+    onResetPromptTemplate,
   } = useResultsContext();
+
+  const firstChapter = plan.chapters[0];
+  const livePreview = firstChapter
+    ? promptTemplate
+        .replace(/\{topic\}/g, firstChapter.topic)
+        .replace(/\{title\}/g, firstChapter.title)
+        .replace(/\{summary\}/g, firstChapter.summary)
+        .replace(/\{content\}/g, firstChapter.content.slice(0, 200) + (firstChapter.content.length > 200 ? '…' : ''))
+    : promptTemplate;
 
   return (
     <motion.div
@@ -90,6 +104,55 @@ export function SetupPanel() {
             {copiedId === 'sys-inst' ? 'Gekopieerd!' : 'Kopieer Instructies'}
           </button>
         </div>
+      </div>
+
+      {/* Step 3 — Prompt template editor */}
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-orange-100 dark:border-gray-700 shadow-sm space-y-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-400 rounded-full flex items-center justify-center font-bold shrink-0">3</div>
+            <div>
+              <h4 className="font-bold text-lg text-gray-900 dark:text-gray-100">Prompt Template</h4>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                Pas de prompt aan die gekopieerd wordt per hoofdstuk.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onResetPromptTemplate}
+            className="shrink-0 flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors"
+          >
+            <RotateCcw className="w-3 h-3" />
+            Reset naar standaard
+          </button>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {TEMPLATE_VARS.map(v => (
+            <span key={v} className="font-mono text-xs bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 px-2 py-1 rounded-md border border-orange-200 dark:border-orange-800">
+              {v}
+            </span>
+          ))}
+        </div>
+
+        <textarea
+          value={promptTemplate}
+          onChange={e => onSetPromptTemplate(e.target.value)}
+          rows={6}
+          spellCheck={false}
+          className="w-full font-mono text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-3 text-gray-800 dark:text-gray-200 resize-y focus:outline-none focus:ring-2 focus:ring-orange-400 dark:focus:ring-orange-500 transition-shadow"
+        />
+
+        {firstChapter && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+              Live preview — {firstChapter.id}: {firstChapter.title}
+            </p>
+            <pre className="text-xs leading-relaxed whitespace-pre-wrap break-words bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-600 dark:text-gray-400 max-h-48 overflow-y-auto custom-scrollbar">
+              {livePreview}
+            </pre>
+          </div>
+        )}
       </div>
 
       <AnimatePresence>

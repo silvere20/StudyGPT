@@ -12,6 +12,9 @@ import { ResultsSection } from './components/ResultsSection';
 import { ResultsContext } from './context/ResultsContext';
 import type { ResultsContextValue } from './context/ResultsContext';
 
+const DEFAULT_PROMPT_TEMPLATE =
+  'Hier is de content voor {topic}: {title}\n\nSamenvatting: {summary}\n\nContent:\n{content}\n\nGebruik de Master Study Map om te zien waar we zijn. Laten we dit hoofdstuk interactief doornemen. Test me op de stof en eventuele opdrachten.';
+
 export default function App() {
   const [plan, setPlan] = useState<StudyPlan | null>(() => {
     try {
@@ -180,9 +183,34 @@ export default function App() {
     toast.success('Master Study Map gedownload!');
   };
 
-  const formatPrompt = (chapter: Chapter) => {
-    return `Hier is de content voor ${chapter.topic}: ${chapter.title}\n\nSamenvatting: ${chapter.summary}\n\nContent:\n${chapter.content}\n\nGebruik de Master Study Map om te zien waar we zijn. Laten we dit hoofdstuk interactief doornemen. Test me op de stof en eventuele opdrachten.`;
-  };
+  const [promptTemplate, setPromptTemplate] = useState<string>(() => {
+    try {
+      return localStorage.getItem('studyflow_prompt_template') ?? DEFAULT_PROMPT_TEMPLATE;
+    } catch { return DEFAULT_PROMPT_TEMPLATE; }
+  });
+
+  useEffect(() => {
+    try {
+      if (promptTemplate === DEFAULT_PROMPT_TEMPLATE) {
+        localStorage.removeItem('studyflow_prompt_template');
+      } else {
+        localStorage.setItem('studyflow_prompt_template', promptTemplate);
+      }
+    } catch { /* storage unavailable */ }
+  // DEFAULT_PROMPT_TEMPLATE is a stable constant — no need in deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptTemplate]);
+
+  const onSetPromptTemplate = useCallback((t: string) => setPromptTemplate(t), []);
+  const onResetPromptTemplate = useCallback(() => setPromptTemplate(DEFAULT_PROMPT_TEMPLATE), []);
+
+  const formatPrompt = useCallback((chapter: Chapter) =>
+    promptTemplate
+      .replace(/\{topic\}/g, chapter.topic)
+      .replace(/\{title\}/g, chapter.title)
+      .replace(/\{summary\}/g, chapter.summary)
+      .replace(/\{content\}/g, chapter.content),
+  [promptTemplate]);
 
   const copyAllPrompts = () => {
     if (!plan) return;
@@ -535,6 +563,9 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
               onDownloadMap: downloadStudyMap,
               onCopyInstructions: () => copyToClipboard(plan.gptSystemInstructions, 'sys-inst'),
               onToggleMapPreview: () => setShowMapPreview(!showMapPreview),
+              promptTemplate,
+              onSetPromptTemplate,
+              onResetPromptTemplate,
             } satisfies ResultsContextValue}>
               <ResultsSection />
             </ResultsContext.Provider>

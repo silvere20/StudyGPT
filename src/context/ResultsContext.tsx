@@ -31,6 +31,9 @@ export interface ResultsContextValue {
   onDownloadMap: () => void;
   onCopyInstructions: () => void;
   onToggleMapPreview: () => void;
+  promptTemplate: string;
+  onSetPromptTemplate: (t: string) => void;
+  onResetPromptTemplate: () => void;
 }
 
 const ResultsContext = createContext<ResultsContextValue | null>(null);
