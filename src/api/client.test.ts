@@ -70,11 +70,12 @@ describe('processDocuments', () => {
       onProgress,
       onResult,
       onError,
+      { maxRetries: 0 },
     );
 
     expect(onProgress).toHaveBeenCalled();
     expect(onResult).not.toHaveBeenCalled();
-    expect(onError).toHaveBeenCalledWith('De verwerking stopte onverwacht zonder eindstatus.');
+    expect(onError).toHaveBeenCalledWith(expect.any(String), 'unexpected-end');
   });
 
   it('rethrows abort errors without converting them to toastable API errors', async () => {

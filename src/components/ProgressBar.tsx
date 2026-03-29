@@ -1,6 +1,7 @@
-import { Loader2, CheckCircle2, AlertCircle, Clock, X } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertCircle, Clock, WifiOff, X } from 'lucide-react';
 import { cn, formatFileSize } from '../utils';
 import type { UploadedFile, FileProgressInfo } from '../types';
+import type { StreamErrorKind } from '../api/client';
 import { SkeletonLoader } from './SkeletonLoader';
 
 interface Props {
@@ -9,15 +10,32 @@ interface Props {
   files: UploadedFile[];
   fileProgress: Map<number, FileProgressInfo>;
   onCancel: () => void;
+  connectionError?: StreamErrorKind | null;
 }
 
-export function ProgressBar({ progressMessage, progressPercent, files, fileProgress, onCancel }: Props) {
+const CONNECTION_ERROR_LABELS: Record<NonNullable<StreamErrorKind>, { label: string; className: string }> = {
+  offline:         { label: 'Backend niet bereikbaar — controleer of de server draait.',           className: 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400' },
+  timeout:         { label: 'Timeout — verwerking duurt te lang. Grote bestanden opsplitsen?',    className: 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400' },
+  'unexpected-end':{ label: 'Stream onverwacht gestopt. Opnieuw verbinden...',                    className: 'bg-yellow-50 dark:bg-yellow-950/40 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-400' },
+  'server-error':  { label: 'Serverfout ontvangen.',                                              className: 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400' },
+};
+
+export function ProgressBar({ progressMessage, progressPercent, files, fileProgress, onCancel, connectionError }: Props) {
+  const errorInfo = connectionError ? CONNECTION_ERROR_LABELS[connectionError] : null;
+
   return (
     <div className="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-3xl p-8 border border-gray-200 dark:border-gray-700 shadow-xl">
+      {errorInfo && (
+        <div className={cn('flex items-center gap-3 px-4 py-3 rounded-xl border text-sm font-medium mb-6', errorInfo.className)}>
+          <WifiOff className="w-4 h-4 shrink-0" />
+          {errorInfo.label}
+        </div>
+      )}
+
       <div className="text-center mb-8">
         <Loader2 className="w-12 h-12 text-orange-500 animate-spin mx-auto mb-4" />
-        <h2 className="text-2xl font-bold text-gray-900">Documenten verwerken</h2>
-        <p className="text-gray-500 mt-2">{progressMessage || 'Bezig met verwerken...'}</p>
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Documenten verwerken</h2>
+        <p className="text-gray-500 dark:text-gray-400 mt-2">{progressMessage || 'Bezig met verwerken...'}</p>
       </div>
 
       <div className="mb-6">

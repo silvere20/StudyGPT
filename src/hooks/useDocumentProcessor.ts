@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { processDocuments, type StudyPlan, type ProgressUpdate } from '../api/client';
+import { processDocuments, type StudyPlan, type ProgressUpdate, type StreamErrorKind } from '../api/client';
 import type { UploadedFile, FileProgressInfo } from '../types';
 
 export type ProcessorState = {
@@ -9,6 +9,7 @@ export type ProcessorState = {
   progressMessage: string;
   progressPercent: number;
   fileProgress: Map<number, FileProgressInfo>;
+  connectionError: StreamErrorKind | null;
 };
 
 export type ProcessorActions = {
@@ -28,9 +29,12 @@ export function useDocumentProcessor(
   const [progressMessage, setProgressMessage] = useState('');
   const [progressPercent, setProgressPercent] = useState(0);
   const [fileProgress, setFileProgress] = useState<Map<number, FileProgressInfo>>(new Map());
+  const [connectionError, setConnectionError] = useState<StreamErrorKind | null>(null);
 
   const isCancelledRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Tracks the last real progress message so the display doesn't reset on reconnect.
+  const lastProgressRef = useRef('');
 
   const resetProcessingState = useCallback(() => {
     abortControllerRef.current = null;
@@ -38,6 +42,7 @@ export function useDocumentProcessor(
     setProgressMessage('');
     setProgressPercent(0);
     setFileProgress(new Map());
+    setConnectionError(null);
   }, []);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -76,9 +81,11 @@ export function useDocumentProcessor(
     isCancelledRef.current = false;
     abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
+    lastProgressRef.current = '';
     setLoading(true);
     setProgressMessage('Bestanden uploaden naar server...');
     setProgressPercent(5);
+    setConnectionError(null);
 
     const initialProgress = new Map<number, FileProgressInfo>();
     files.forEach((_, idx) => {
@@ -91,6 +98,17 @@ export function useDocumentProcessor(
         files.map(f => f.file),
         (update: ProgressUpdate) => {
           if (isCancelledRef.current) return;
+
+          // 'reconnecting' is an internal step emitted between retry attempts.
+          // Keep the last real progress message visible and show the error banner.
+          if (update.step === 'reconnecting') {
+            setConnectionError('unexpected-end');
+            return;
+          }
+
+          // Real progress resumed — clear the connection error banner.
+          lastProgressRef.current = update.message;
+          setConnectionError(null);
           setProgressMessage(update.message);
           setProgressPercent(update.progress);
 
@@ -125,10 +143,16 @@ export function useDocumentProcessor(
           onSuccess(result);
           toast.success('Studieplan succesvol gegenereerd!');
         },
-        (message: string) => {
+        (message: string, kind?: StreamErrorKind) => {
           if (isCancelledRef.current) return;
           resetProcessingState();
-          toast.error(message);
+          const prefix =
+            kind === 'offline'          ? 'Backend niet bereikbaar'   :
+            kind === 'timeout'          ? 'Timeout (5 min)'           :
+            kind === 'unexpected-end'   ? 'Stream onverwacht gestopt' :
+            kind === 'server-error'     ? 'Serverfout'                :
+            'Fout';
+          toast.error(`${prefix}: ${message}`);
         },
         { signal: abortControllerRef.current.signal }
       );
@@ -136,7 +160,12 @@ export function useDocumentProcessor(
       const isAbortError = error instanceof Error && error.name === 'AbortError';
       if (isAbortError || isCancelledRef.current) return;
       resetProcessingState();
-      toast.error('Er is een onverwachte fout opgetreden. Controleer of de backend draait.');
+      // TypeError means the initial fetch itself failed (no network).
+      if (error instanceof TypeError) {
+        toast.error('Backend niet bereikbaar. Controleer of de server draait.');
+      } else {
+        toast.error('Er is een onverwachte fout opgetreden. Controleer of de backend draait.');
+      }
     }
   }, [files, onBeforeGenerate, onSuccess, resetProcessingState]);
 
@@ -158,6 +187,7 @@ export function useDocumentProcessor(
     progressMessage,
     progressPercent,
     fileProgress,
+    connectionError,
     onDrop,
     removeFile,
     handleGenerate,

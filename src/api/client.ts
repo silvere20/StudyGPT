@@ -21,13 +21,20 @@ export interface ProgressUpdate {
   fileName?: string;
 }
 
+export type StreamErrorKind = 'offline' | 'timeout' | 'unexpected-end' | 'server-error';
+
 type OnProgress = (update: ProgressUpdate) => void;
 type OnResult = (plan: StudyPlan) => void;
-type OnError = (message: string) => void;
+type OnError = (message: string, kind?: StreamErrorKind) => void;
 
 type ProcessDocumentsOptions = {
   signal?: AbortSignal;
+  /** Maximum number of retries on unexpected stream end. Defaults to 2. */
+  maxRetries?: number;
 };
+
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+const RETRY_DELAY_MS = 2000;
 
 export async function processDocuments(
   files: File[],
@@ -36,92 +43,164 @@ export async function processDocuments(
   onError: OnError,
   options: ProcessDocumentsOptions = {},
 ): Promise<void> {
-  const formData = new FormData();
-  files.forEach((f) => formData.append('files', f));
+  const MAX = options.maxRetries ?? 2;
+  const deadline = Date.now() + STREAM_TIMEOUT_MS;
 
-  const response = await fetch('/api/process', {
-    method: 'POST',
-    body: formData,
-    signal: options.signal,
-  });
+  for (let attempt = 0; attempt <= MAX; attempt++) {
+    if (options.signal?.aborted) return;
 
-  if (!response.ok) {
-    onError(`Server fout: ${response.status} ${response.statusText}`);
-    return;
-  }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      onError(
+        'Verwerking duurde te lang (timeout na 5 minuten). Probeer opnieuw met kleinere bestanden.',
+        'timeout',
+      );
+      return;
+    }
 
-  const reader = response.body?.getReader();
-  if (!reader) {
-    onError('Geen streaming response ontvangen.');
-    return;
-  }
+    // Build a fresh FormData for each attempt (a submitted FormData cannot be reused).
+    const formData = new FormData();
+    files.forEach((f) => formData.append('files', f));
 
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let receivedTerminalEvent = false;
+    let response: Response;
+    try {
+      response = await fetch('/api/process', {
+        method: 'POST',
+        body: formData,
+        signal: options.signal,
+      });
+    } catch (err) {
+      // Re-throw AbortError so the caller can detect cancellation.
+      // Use name check instead of instanceof because DOMException may not extend Error in some environments.
+      if ((err as { name?: unknown }).name === 'AbortError') throw err;
+      onError('Backend niet bereikbaar. Controleer of de server draait.', 'offline');
+      return;
+    }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
+    if (!response.ok) {
+      onError(`Server fout: ${response.status} ${response.statusText}`, 'server-error');
+      return;
+    }
 
-    const chunks = buffer.split('\n\n');
-    buffer = chunks.pop() || '';
+    const reader = response.body?.getReader();
+    if (!reader) {
+      onError('Geen streaming response ontvangen.', 'server-error');
+      return;
+    }
 
-    for (const chunk of chunks) {
-      const parsed = parseSseChunk(chunk);
-      if (!parsed) continue;
+    // Cancel the reader when the per-attempt time budget expires.
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      void reader.cancel();
+    }, remaining);
 
-      try {
-        const data = JSON.parse(parsed.data);
-        if (parsed.eventType === 'progress') {
-          onProgress(data as ProgressUpdate);
-          continue;
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let receivedTerminalEvent = false;
+    let readError = false;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop() ?? '';
+
+        for (const chunk of chunks) {
+          const parsed = parseSseChunk(chunk);
+          if (!parsed) continue;
+
+          try {
+            const data = JSON.parse(parsed.data) as Record<string, unknown>;
+            if (parsed.eventType === 'progress') {
+              onProgress(data as unknown as ProgressUpdate);
+              continue;
+            }
+            if (parsed.eventType === 'result') {
+              receivedTerminalEvent = true;
+              onResult(data as unknown as StudyPlan);
+              return;
+            }
+            if (parsed.eventType === 'error') {
+              receivedTerminalEvent = true;
+              onError((data.message as string | undefined) ?? 'Onbekende fout', 'server-error');
+              return;
+            }
+          } catch {
+            receivedTerminalEvent = true;
+            onError('Ongeldige serverresponse ontvangen.', 'server-error');
+            return;
+          }
         }
 
-        if (parsed.eventType === 'result') {
-          receivedTerminalEvent = true;
-          onResult(data as StudyPlan);
+        if (done) break;
+      }
+    } catch {
+      readError = true;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (options.signal?.aborted) return;
+
+    // Network error mid-stream — don't retry, the whole connection is gone.
+    if (readError) {
+      onError(
+        'De verbinding met de server is verbroken tijdens het ontvangen van data.',
+        'offline',
+      );
+      return;
+    }
+
+    if (timedOut) {
+      onError(
+        'Verwerking duurde te lang (timeout na 5 minuten). Probeer opnieuw met kleinere bestanden.',
+        'timeout',
+      );
+      return;
+    }
+
+    // Flush any remaining buffer before deciding.
+    if (!receivedTerminalEvent && buffer.trim().length > 0) {
+      const parsed = parseSseChunk(buffer);
+      if (parsed) {
+        try {
+          const data = JSON.parse(parsed.data) as Record<string, unknown>;
+          if (parsed.eventType === 'result') {
+            receivedTerminalEvent = true;
+            onResult(data as unknown as StudyPlan);
+            return;
+          }
+          if (parsed.eventType === 'error') {
+            receivedTerminalEvent = true;
+            onError((data.message as string | undefined) ?? 'Onbekende fout', 'server-error');
+            return;
+          }
+        } catch {
+          onError('Ongeldige serverresponse ontvangen.', 'server-error');
           return;
         }
-
-        if (parsed.eventType === 'error') {
-          receivedTerminalEvent = true;
-          onError(data.message || 'Onbekende fout');
-          return;
-        }
-      } catch {
-        onError('Ongeldige serverresponse ontvangen.');
-        return;
       }
     }
 
-    if (done) break;
-  }
+    if (receivedTerminalEvent) return;
 
-  if (buffer.trim().length > 0) {
-    const parsed = parseSseChunk(buffer);
-    if (parsed) {
-      try {
-        const data = JSON.parse(parsed.data);
-        if (parsed.eventType === 'result') {
-          receivedTerminalEvent = true;
-          onResult(data as StudyPlan);
-          return;
-        }
-        if (parsed.eventType === 'error') {
-          receivedTerminalEvent = true;
-          onError(data.message || 'Onbekende fout');
-          return;
-        }
-      } catch {
-        onError('Ongeldige serverresponse ontvangen.');
-        return;
-      }
+    // Stream ended without a terminal event.
+    if (attempt < MAX) {
+      onProgress({
+        step: 'reconnecting',
+        progress: 0,
+        message: `Verbinding verbroken. Opnieuw verbinden (poging ${attempt + 2} van ${MAX + 1})...`,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    } else {
+      onError(
+        'De verwerking stopte onverwacht. Controleer de verbinding en probeer opnieuw.',
+        'unexpected-end',
+      );
     }
-  }
-
-  if (!receivedTerminalEvent && !options.signal?.aborted) {
-    onError('De verwerking stopte onverwacht zonder eindstatus.');
   }
 }
 
