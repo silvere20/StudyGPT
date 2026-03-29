@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint (TypeScript type-check)
+        run: npm run lint
+
+      - name: Frontend tests
+        run: npm run test:frontend
+
+      - name: Install Tesseract OCR
+        run: sudo apt-get install -y tesseract-ocr tesseract-ocr-nld
+
+      - name: Create backend venv and install dependencies
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/pip install --upgrade pip
+          backend/.venv/bin/pip install -r backend/requirements-dev.txt
+
+      - name: Backend tests
+        run: backend/.venv/bin/python -m pytest backend/tests
