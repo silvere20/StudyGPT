@@ -38,6 +38,11 @@ export default function App() {
       return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
     } catch { return new Set(); }
   });
+  const [promptTemplate, setPromptTemplate] = useState<string>(() => {
+    try {
+      return localStorage.getItem('studyflow_prompt_template') ?? DEFAULT_PROMPT_TEMPLATE;
+    } catch { return DEFAULT_PROMPT_TEMPLATE; }
+  });
   const topicRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // ── Topic order ──
@@ -212,12 +217,6 @@ export default function App() {
     URL.revokeObjectURL(url);
     toast.success('Master Study Map gedownload!');
   };
-
-  const [promptTemplate, setPromptTemplate] = useState<string>(() => {
-    try {
-      return localStorage.getItem('studyflow_prompt_template') ?? DEFAULT_PROMPT_TEMPLATE;
-    } catch { return DEFAULT_PROMPT_TEMPLATE; }
-  });
 
   useEffect(() => {
     try {
