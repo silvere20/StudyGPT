@@ -56,6 +56,14 @@ Bij extreem grote scanpagina's splitst de OCR-laag PDF-pagina's en afbeeldingen 
 
 ## Wijzigingslog
 
+### 2026-03-29 - CI/CD pipeline toegevoegd
+- **Bestand:** [.github/workflows/ci.yml](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/.github/workflows/ci.yml)
+- **Doel:** automatisch tests en lint afdwingen bij elke push en pull request.
+- **Wijzigingen:** GitHub Actions workflow met Node 20, Python 3.11, Tesseract, frontend/backend test en lint; npm- en pip-cache toegevoegd voor snellere runs; dummy `OPENAI_API_KEY` zodat de app opstart zonder te crashen tijdens CI.
+- **Gedragsimpact:** regressies worden automatisch gedetecteerd zonder handmatig `npm run test` te draaien.
+- **Testbewijs:** workflow-syntax gevalideerd; lokale tests blijven groen.
+- **Resterend risico:** CI draait geen live OCR-smoke of OpenAI-calls vanwege secrets.
+
 ### 2026-03-28 - Backend stabiliteitsronde
 - **Bestanden:** [backend/main.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/main.py)
 - **Doel:** multi-file requests stabiel maken, progressie echt doorgeven en terminale states afdwingen.

@@ -24,6 +24,20 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -40,7 +54,10 @@ jobs:
         run: |
           python -m venv backend/.venv
           backend/.venv/bin/pip install --upgrade pip
+          backend/.venv/bin/pip install -r backend/requirements.txt
           backend/.venv/bin/pip install -r backend/requirements-dev.txt
 
       - name: Backend tests
-        run: backend/.venv/bin/python -m pytest backend/tests
+        env:
+          OPENAI_API_KEY: sk-test-dummy
+        run: backend/.venv/bin/python -m pytest backend/tests -v --tb=short
