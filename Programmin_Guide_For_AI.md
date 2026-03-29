@@ -56,6 +56,21 @@ Bij extreem grote scanpagina's splitst de OCR-laag PDF-pagina's en afbeeldingen 
 
 ## Wijzigingslog
 
+### 2026-03-29 - Donkere modus basis toegevoegd
+- **Bestanden:** `src/App.tsx`, `src/components/UploadSection.tsx`, `src/components/ProgressBar.tsx`, `src/index.css`
+- **Doel:** dark-mode ondersteuning via systeemvoorkeur en handmatige toggle.
+- **Wijzigingen:** `@custom-variant dark` toegevoegd aan `index.css` (Tailwind v4 class-strategie); `darkMode` state initialiseert vanuit `prefers-color-scheme`; `useEffect` plaatst/verwijdert `dark`-class op `<html>`; toggle-knop (Sun/Moon) in header; dark-varianten toegevoegd op hoofdlayout, uploadzone en progressbalk.
+- **Gedragsimpact:** app volgt systeemvoorkeur bij eerste load; gebruiker kan handmatig wisselen.
+- **Resterend risico:** ResultsSection en chapter-cards nog niet omgezet; dat is een volgende iteratie.
+
+### 2026-03-29 - Tesseract startup-validatie en health-uitbreiding
+- **Bestanden:** `backend/services/ocr.py`, `backend/main.py`, `src/api/client.ts`, `src/types.ts`, `src/App.tsx`, `src/components/UploadSection.tsx`
+- **Doel:** vroeg detecteren van ontbrekende Tesseract-taaldata zodat gebruikers direct feedback krijgen.
+- **Wijzigingen:** `check_tesseract_languages()` toegevoegd aan `ocr.py`; bij startup in `main.py` wordt de check uitgevoerd en gelogd; `/api/health` uitgebreid met `ocr_available` en `ocr_missing_langs`; frontend toont `'warning'` status (oranje) bij ontbrekende taaldata; genereren is nog steeds toegestaan bij `'warning'` (met toast).
+- **Gedragsimpact:** ontbrekende taaldata leidt niet meer tot cryptische foutmelding mid-verwerking maar tot duidelijke waarschuwing bij upload.
+- **Testbewijs:** `test_health_includes_ocr_status` groen.
+- **Resterend risico:** check wordt eenmalig bij startup uitgevoerd; herstart nodig na installatie van taaldata.
+
 ### 2026-03-29 - ResultsContext toegevoegd, prop-drilling opgelost
 - **Bestanden:** `src/context/ResultsContext.tsx` (nieuw), `src/App.tsx`, `src/components/ResultsSection.tsx`, `src/components/SetupPanel.tsx`
 - **Doel:** prop-drilling van >15 callbacks elimineren via React Context.

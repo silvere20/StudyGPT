@@ -13,7 +13,7 @@ interface Props {
 
 export function ProgressBar({ progressMessage, progressPercent, files, fileProgress, onCancel }: Props) {
   return (
-    <div className="max-w-2xl mx-auto bg-white rounded-3xl p-8 border border-gray-200 shadow-xl">
+    <div className="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-3xl p-8 border border-gray-200 dark:border-gray-700 shadow-xl">
       <div className="text-center mb-8">
         <Loader2 className="w-12 h-12 text-orange-500 animate-spin mx-auto mb-4" />
         <h2 className="text-2xl font-bold text-gray-900">Documenten verwerken</h2>
@@ -21,7 +21,7 @@ export function ProgressBar({ progressMessage, progressPercent, files, fileProgr
       </div>
 
       <div className="mb-6">
-        <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+        <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-full h-3 overflow-hidden">
           <div
             className="bg-orange-500 h-full rounded-full transition-all duration-500 ease-out"
             style={{ width: `${Math.max(5, progressPercent)}%` }}
@@ -43,7 +43,7 @@ export function ProgressBar({ progressMessage, progressPercent, files, fileProgr
               status === 'done' ? "bg-emerald-50 border-emerald-200" :
               status === 'processing' ? "bg-orange-50 border-orange-200" :
               status === 'error' ? "bg-red-50 border-red-200" :
-              "bg-gray-50 border-gray-200"
+              "bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700"
             )}>
               <div className="flex items-center gap-3 mb-2">
                 {status === 'done' ? (

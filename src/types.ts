@@ -9,7 +9,7 @@ export type FileProgressInfo = {
   message: string;
 };
 
-export type HealthStatus = 'checking' | 'healthy' | 'backend-offline' | 'missing-key';
+export type HealthStatus = 'checking' | 'healthy' | 'backend-offline' | 'missing-key' | 'warning';
 
 export type HealthSnapshot = {
   status: Exclude<HealthStatus, 'checking'>;

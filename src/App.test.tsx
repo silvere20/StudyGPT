@@ -43,6 +43,8 @@ describe('App', () => {
     mockedCheckHealth.mockResolvedValue({
       status: 'ok',
       openai_configured: true,
+      ocr_available: true,
+      ocr_missing_langs: [],
     });
 
     mockedProcessDocuments.mockImplementation(async (_files, onProgress, onResult) => {
@@ -89,6 +91,8 @@ describe('App', () => {
     mockedCheckHealth.mockResolvedValue({
       status: 'ok',
       openai_configured: false,
+      ocr_available: true,
+      ocr_missing_langs: [],
     });
     mockedProcessDocuments.mockResolvedValue();
 

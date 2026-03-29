@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { BookOpen, Loader2, Package, RotateCcw } from 'lucide-react';
+import { BookOpen, Loader2, Moon, Package, RotateCcw, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
 import { checkHealth, type StudyPlan, type Chapter } from './api/client';
@@ -24,6 +24,14 @@ export default function App() {
   const [zipGenerating, setZipGenerating] = useState(false);
   const topicRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
+  const [darkMode, setDarkMode] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches
+  );
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
+
   const applyHealthSnapshot = useCallback((snapshot: HealthSnapshot) => {
     setHealthStatus(snapshot.status);
     setHealthMessage(snapshot.message);
@@ -38,6 +46,11 @@ export default function App() {
     try {
       const health = await checkHealth();
       if (health.status === 'ok' && health.openai_configured) {
+        if (!health.ocr_available) {
+          const snapshot = { status: 'warning' as const, message: 'Backend draait, maar Tesseract-taaldata ontbreekt. OCR werkt mogelijk niet correct.' };
+          applyHealthSnapshot(snapshot);
+          return snapshot;
+        }
         const snapshot = { status: 'healthy' as const, message: 'Backend en OpenAI zijn klaar voor verwerking.' };
         applyHealthSnapshot(snapshot);
         return snapshot;
@@ -75,6 +88,10 @@ export default function App() {
 
   const onBeforeGenerate = useCallback(async (): Promise<boolean> => {
     const health = await refreshHealth();
+    if (health.status === 'warning') {
+      toast.warning(health.message);
+      return true;
+    }
     if (health.status !== 'healthy') {
       toast.error(health.message);
       return false;
@@ -345,17 +362,24 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
   // ── RENDER ──
 
   return (
-    <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-orange-100 pb-24">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 font-sans selection:bg-orange-100 pb-24">
       <Toaster position="top-center" richColors />
 
       {/* Header */}
-      <header className="border-b border-gray-200 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg flex items-center justify-center shadow-sm">
               <BookOpen className="text-white w-5 h-5" />
             </div>
             <h1 className="font-bold text-xl tracking-tight">StudyFlow AI</h1>
+            <button
+              onClick={() => setDarkMode(d => !d)}
+              className="ml-2 p-2 rounded-lg text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors"
+              aria-label="Donkere modus wisselen"
+            >
+              {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
           </div>
           {plan && (
             <div className="flex items-center gap-3">

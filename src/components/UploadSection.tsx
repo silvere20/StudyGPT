@@ -58,7 +58,7 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
         {...getRootProps()}
         className={cn(
           "border-2 border-dashed rounded-3xl p-12 transition-all cursor-pointer flex flex-col items-center justify-center gap-4 relative overflow-hidden",
-          isDragActive ? "border-orange-500 bg-orange-50 scale-[1.02]" : "border-gray-300 bg-white hover:border-orange-400 hover:shadow-lg hover:shadow-orange-100"
+          isDragActive ? "border-orange-500 bg-orange-50 dark:bg-orange-950 scale-[1.02]" : "border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 hover:border-orange-400 hover:shadow-lg hover:shadow-orange-100"
         )}
       >
         <input {...getInputProps()} />
@@ -84,14 +84,16 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
           ? "border-emerald-200 bg-emerald-50"
           : healthStatus === 'checking'
             ? "border-gray-200 bg-white"
-            : "border-amber-200 bg-amber-50"
+            : healthStatus === 'warning'
+              ? "border-orange-200 bg-orange-50"
+              : "border-amber-200 bg-amber-50"
       )}>
         {healthStatus === 'healthy' ? (
           <Check className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
         ) : healthStatus === 'checking' ? (
           <Loader2 className="w-5 h-5 text-gray-400 shrink-0 mt-0.5 animate-spin" />
         ) : (
-          <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <AlertCircle className={cn("w-5 h-5 shrink-0 mt-0.5", healthStatus === 'warning' ? "text-orange-500" : "text-amber-600")} />
         )}
         <div className="flex-1">
           <p className="font-semibold text-sm text-gray-900">
@@ -99,11 +101,13 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
               ? 'Verwerkingsstack beschikbaar'
               : healthStatus === 'checking'
                 ? 'Beschikbaarheid controleren'
-                : 'Actie nodig voor verwerking'}
+                : healthStatus === 'warning'
+                  ? 'OCR gedeeltelijk beschikbaar'
+                  : 'Actie nodig voor verwerking'}
           </p>
           <p className={cn(
             "text-sm mt-1",
-            healthStatus === 'healthy' ? "text-emerald-800" : "text-gray-600"
+            healthStatus === 'healthy' ? "text-emerald-800" : healthStatus === 'warning' ? "text-orange-700" : "text-gray-600"
           )}>
             {healthMessage}
           </p>
@@ -123,7 +127,7 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
           className="mt-6 space-y-3"
         >
           {files.map((fMeta, idx) => (
-            <div key={idx} className="flex items-center justify-between p-4 bg-white border rounded-xl shadow-sm">
+            <div key={idx} className="flex items-center justify-between p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-orange-50 text-orange-600 rounded-lg">
                   <FileText className="w-6 h-6" />
@@ -145,10 +149,10 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
           <div className="flex flex-col items-center justify-center mt-8 gap-4">
             <button
               onClick={onGenerate}
-              disabled={healthStatus !== 'healthy'}
+              disabled={healthStatus !== 'healthy' && healthStatus !== 'warning'}
               className={cn(
                 "px-10 py-5 rounded-2xl font-bold text-lg flex items-center gap-3 transition-all shadow-xl",
-                healthStatus === 'healthy'
+                healthStatus === 'healthy' || healthStatus === 'warning'
                   ? "bg-gradient-to-r from-orange-500 to-orange-600 text-white hover:scale-105 shadow-orange-500/20"
                   : "bg-gray-200 text-gray-400 shadow-none cursor-not-allowed"
               )}

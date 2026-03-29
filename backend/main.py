@@ -22,6 +22,7 @@ from services.cache import (
     save_to_cache,
 )
 from services.document import process_document
+from services.ocr import check_tesseract_languages
 
 load_dotenv()
 
@@ -29,6 +30,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _processing_semaphore = asyncio.Semaphore(3)
+
+_ocr_status = check_tesseract_languages()
+if not _ocr_status["available"]:
+    missing = _ocr_status.get("missing", [])
+    logger.warning(
+        "OCR niet volledig beschikbaar. Ontbrekende taaldata: %s. "
+        "Installeer met: brew install tesseract tesseract-lang",
+        missing,
+    )
 
 T = TypeVar("T")
 ProgressCallback = Callable[[str, int, str], Awaitable[None]]
@@ -47,7 +57,12 @@ app.add_middleware(
 @app.get("/api/health")
 async def health():
     has_key = bool(os.getenv("OPENAI_API_KEY"))
-    return {"status": "ok", "openai_configured": has_key}
+    return {
+        "status": "ok",
+        "openai_configured": has_key,
+        "ocr_available": _ocr_status["available"],
+        "ocr_missing_langs": _ocr_status.get("missing", []),
+    }
 
 
 @app.post("/api/process")

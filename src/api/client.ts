@@ -125,7 +125,7 @@ export async function processDocuments(
   }
 }
 
-export async function checkHealth(): Promise<{ status: string; openai_configured: boolean }> {
+export async function checkHealth(): Promise<{ status: string; openai_configured: boolean; ocr_available: boolean; ocr_missing_langs: string[] }> {
   const res = await fetch('/api/health');
   if (!res.ok) {
     throw new Error(`Health check mislukt: ${res.status}`);

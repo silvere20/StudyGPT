@@ -224,6 +224,19 @@ def test_process_returns_error_when_semaphore_full(monkeypatch):
     assert "tegelijkertijd" in error_events[0]["message"]
 
 
+def test_health_includes_ocr_status(monkeypatch):
+    """Het health-endpoint geeft ocr_available en ocr_missing_langs terug."""
+    monkeypatch.setattr(main, "_ocr_status", {"available": False, "missing": ["nld"]})
+
+    client = TestClient(main.app)
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ocr_available"] is False
+    assert "nld" in body["ocr_missing_langs"]
+
+
 def test_process_stream_emits_single_error_terminal_event(monkeypatch):
     async def fake_process_document(_file_path, _filename, on_progress=None):
         if on_progress:

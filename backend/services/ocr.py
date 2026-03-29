@@ -21,6 +21,41 @@ MAX_OCR_TILE_PIXELS = 18_000_000
 _ocr_executor = ProcessPoolExecutor(max_workers=4)
 
 
+def check_tesseract_languages() -> dict:
+    """
+    Check if Tesseract is installed and if required language packs are available.
+    Returns a dict with keys: available (bool), languages (list[str]), missing (list[str]).
+    """
+    required = ["eng", "nld"]
+    try:
+        result = subprocess.run(
+            ["tesseract", "--list-langs"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # tesseract --list-langs writes to stderr
+        output = result.stderr + result.stdout
+        available_langs = [
+            line.strip()
+            for line in output.splitlines()
+            if line.strip() and not line.startswith("List of")
+        ]
+        missing = [lang for lang in required if lang not in available_langs]
+        return {
+            "available": result.returncode == 0 and len(missing) == 0,
+            "languages": available_langs,
+            "missing": missing,
+        }
+    except FileNotFoundError:
+        return {
+            "available": False,
+            "languages": [],
+            "missing": required,
+            "error": "Tesseract niet gevonden. Installeer met: brew install tesseract",
+        }
+
+
 def is_scanned_pdf(file_path: str, threshold: int = 50) -> bool:
     """Detect if a PDF is scanned by combining text density and text-page coverage."""
     doc = fitz.open(file_path)
