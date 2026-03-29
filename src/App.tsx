@@ -188,7 +188,7 @@ export default function App() {
 
   const {
     files, loading, progressMessage, progressPercent, fileProgress, connectionError,
-    onDrop, removeFile, handleGenerate, handleCancel, resetFiles,
+    onDrop, removeFile, reorderFiles, handleGenerate, handleCancel, resetFiles,
   } = useDocumentProcessor(onSuccess, onBeforeGenerate);
 
   const copyToClipboard = (text: string, id: string) => {
@@ -566,6 +566,7 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
               healthMessage={healthMessage}
               onRefreshHealth={() => void refreshHealth()}
               onRemoveFile={removeFile}
+              onReorderFiles={reorderFiles}
               onGenerate={handleGenerate}
             />
           ) : (

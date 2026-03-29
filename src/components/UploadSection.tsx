@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { motion } from 'motion/react';
-import { FileText, Upload, Loader2, Check, AlertCircle, ArrowRight, X } from 'lucide-react';
+import { FileText, Upload, Loader2, Check, AlertCircle, ArrowRight, X, GripVertical } from 'lucide-react';
 import { cn, formatFileSize } from '../utils';
 import type { UploadedFile, HealthStatus } from '../types';
 
@@ -11,10 +12,13 @@ interface Props {
   healthMessage: string;
   onRefreshHealth: () => void;
   onRemoveFile: (idx: number) => void;
+  onReorderFiles: (from: number, to: number) => void;
   onGenerate: () => void;
 }
 
-export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRefreshHealth, onRemoveFile, onGenerate }: Props) {
+export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRefreshHealth, onRemoveFile, onReorderFiles, onGenerate }: Props) {
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
@@ -126,25 +130,60 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
           animate={{ opacity: 1, y: 0 }}
           className="mt-6 space-y-3"
         >
-          {files.map((fMeta, idx) => (
-            <div key={idx} className="flex items-center justify-between p-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-orange-50 text-orange-600 rounded-lg">
-                  <FileText className="w-6 h-6" />
-                </div>
-                <div>
-                  <p className="font-medium text-gray-900">{fMeta.file.name}</p>
-                  <p className="text-sm text-gray-500">{formatFileSize(fMeta.file.size)}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => onRemoveFile(idx)}
-                className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+          {files.map((fMeta, idx) => {
+            const isDragging = dragIdx === idx;
+            const isOver = overIdx === idx && !isDragging;
+            return (
+              <div
+                key={fMeta.file.name}
+                draggable
+                onDragStart={(e) => {
+                  setDragIdx(idx);
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (overIdx !== idx) setOverIdx(idx);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragIdx !== null && dragIdx !== idx) onReorderFiles(dragIdx, idx);
+                  setDragIdx(null);
+                  setOverIdx(null);
+                }}
+                onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+                className={cn(
+                  "flex items-center justify-between p-4 bg-white dark:bg-gray-800 border rounded-xl shadow-sm transition-all",
+                  isDragging ? "opacity-40 border-orange-300 dark:border-orange-600" :
+                  isOver     ? "border-orange-400 dark:border-orange-500 ring-2 ring-orange-300/50 dark:ring-orange-600/40" :
+                               "border-gray-200 dark:border-gray-700"
+                )}
               >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-          ))}
+                <div className="flex items-center gap-3">
+                  <div
+                    className="cursor-grab active:cursor-grabbing text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-colors shrink-0"
+                    title="Versleep om volgorde te wijzigen"
+                  >
+                    <GripVertical className="w-5 h-5" />
+                  </div>
+                  <div className="p-2 bg-orange-50 dark:bg-orange-950/40 text-orange-600 rounded-lg">
+                    <FileText className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-gray-900 dark:text-gray-100">{fMeta.file.name}</p>
+                    <p className="text-sm text-gray-500">{formatFileSize(fMeta.file.size)}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => onRemoveFile(idx)}
+                  className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            );
+          })}
 
           <div className="flex flex-col items-center justify-center mt-8 gap-4">
             <button

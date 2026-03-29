@@ -15,6 +15,7 @@ export type ProcessorState = {
 export type ProcessorActions = {
   onDrop: (acceptedFiles: File[]) => void;
   removeFile: (idx: number) => void;
+  reorderFiles: (from: number, to: number) => void;
   handleGenerate: () => Promise<void>;
   handleCancel: () => void;
   resetFiles: () => void;
@@ -70,6 +71,15 @@ export function useDocumentProcessor(
 
   const removeFile = useCallback((idx: number) => {
     setFiles(prev => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const reorderFiles = useCallback((from: number, to: number) => {
+    setFiles(prev => {
+      const next = [...prev];
+      const [removed] = next.splice(from, 1);
+      next.splice(to, 0, removed);
+      return next;
+    });
   }, []);
 
   const handleGenerate = useCallback(async () => {
@@ -190,6 +200,7 @@ export function useDocumentProcessor(
     connectionError,
     onDrop,
     removeFile,
+    reorderFiles,
     handleGenerate,
     handleCancel,
     resetFiles,
