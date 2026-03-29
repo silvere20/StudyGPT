@@ -56,6 +56,14 @@ Bij extreem grote scanpagina's splitst de OCR-laag PDF-pagina's en afbeeldingen 
 
 ## Wijzigingslog
 
+### 2026-03-29 - ResultsContext toegevoegd, prop-drilling opgelost
+- **Bestanden:** `src/context/ResultsContext.tsx` (nieuw), `src/App.tsx`, `src/components/ResultsSection.tsx`, `src/components/SetupPanel.tsx`
+- **Doel:** prop-drilling van >15 callbacks elimineren via React Context.
+- **Wijzigingen:** `ResultsContextValue` interface gecentraliseerd in `src/context/ResultsContext.tsx`; `ResultsSection` en `SetupPanel` consumeren context via `useResultsContext()`; `App.tsx` levert `ResultsContext.Provider`.
+- **Gedragsimpact:** geen gedragswijziging; uitbreiden van ResultsSection vereist geen aanpassing in App.tsx meer.
+- **Testbewijs:** `npm run lint` groen; vitest groen.
+- **Resterend risico:** context re-rendert alle consumers bij elke state-update; bij performance-problemen kan `useMemo` worden toegevoegd op het value-object.
+
 ### 2026-03-29 - Rate limiting via asyncio.Semaphore
 - **Bestand:** `backend/main.py`
 - **Doel:** stapeling van OpenAI-calls voorkomen bij gelijktijdige uploads.

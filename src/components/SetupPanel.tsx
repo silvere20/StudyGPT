@@ -2,31 +2,21 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Settings, Download, Eye, Copy, Check, Package, Loader2, Map as MapIcon, Info } from 'lucide-react';
 import { cn } from '../utils';
 import { LazyMarkdown } from './LazyMarkdown';
-import type { StudyPlan } from '../api/client';
+import { useResultsContext } from '../context/ResultsContext';
 
-interface Props {
-  plan: StudyPlan;
-  zipFileCount: number;
-  zipGenerating: boolean;
-  showMapPreview: boolean;
-  copiedId: string | null;
-  onDownloadZip: () => void;
-  onDownloadMap: () => void;
-  onCopyInstructions: () => void;
-  onToggleMapPreview: () => void;
-}
+export function SetupPanel() {
+  const {
+    plan,
+    zipFileCount,
+    zipGenerating,
+    showMapPreview,
+    copiedId,
+    onDownloadZip,
+    onDownloadMap,
+    onCopyInstructions,
+    onToggleMapPreview,
+  } = useResultsContext();
 
-export function SetupPanel({
-  plan,
-  zipFileCount,
-  zipGenerating,
-  showMapPreview,
-  copiedId,
-  onDownloadZip,
-  onDownloadMap,
-  onCopyInstructions,
-  onToggleMapPreview,
-}: Props) {
   return (
     <motion.div
       initial={{ opacity: 0, height: 0, scale: 0.98 }}

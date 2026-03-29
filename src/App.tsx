@@ -9,6 +9,8 @@ import { useDocumentProcessor } from './hooks/useDocumentProcessor';
 import { ProgressBar } from './components/ProgressBar';
 import { UploadSection } from './components/UploadSection';
 import { ResultsSection } from './components/ResultsSection';
+import { ResultsContext } from './context/ResultsContext';
+import type { ResultsContextValue } from './context/ResultsContext';
 
 export default function App() {
   const [plan, setPlan] = useState<StudyPlan | null>(null);
@@ -408,33 +410,35 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
               onGenerate={handleGenerate}
             />
           ) : (
-            <ResultsSection
-              plan={plan}
-              files={files}
-              filteredChapters={filteredChapters}
-              expandedChapters={expandedChapters}
-              filterQuery={filterQuery}
-              zipFileCount={zipFileCount}
-              totalWords={totalWords}
-              zipGenerating={zipGenerating}
-              copiedId={copiedId}
-              showSetup={showSetup}
-              showMapPreview={showMapPreview}
-              topicRefs={topicRefs}
-              onToggleSetup={() => setShowSetup(!showSetup)}
-              onToggleChapter={toggleChapter}
-              onSetFilterQuery={setFilterQuery}
-              onExpandAll={() => setExpandedChapters(new Set(filteredChapters.map(c => c.id)))}
-              onCollapseAll={() => setExpandedChapters(new Set())}
-              onScrollToTopic={scrollToTopic}
-              onCopyChapterPrompt={(chapter, id) => copyToClipboard(formatPrompt(chapter), id)}
-              onCopyAll={copyAllPrompts}
-              onDownloadAll={downloadAllPrompts}
-              onDownloadZip={downloadOptimizedRagZip}
-              onDownloadMap={downloadStudyMap}
-              onCopyInstructions={() => copyToClipboard(plan.gptSystemInstructions, 'sys-inst')}
-              onToggleMapPreview={() => setShowMapPreview(!showMapPreview)}
-            />
+            <ResultsContext.Provider value={{
+              plan,
+              files,
+              filteredChapters,
+              expandedChapters,
+              filterQuery,
+              zipFileCount,
+              totalWords,
+              zipGenerating,
+              copiedId,
+              showSetup,
+              showMapPreview,
+              topicRefs,
+              onToggleSetup: () => setShowSetup(!showSetup),
+              onToggleChapter: toggleChapter,
+              onSetFilterQuery: setFilterQuery,
+              onExpandAll: () => setExpandedChapters(new Set(filteredChapters.map(c => c.id))),
+              onCollapseAll: () => setExpandedChapters(new Set()),
+              onScrollToTopic: scrollToTopic,
+              onCopyChapterPrompt: (chapter, id) => copyToClipboard(formatPrompt(chapter), id),
+              onCopyAll: copyAllPrompts,
+              onDownloadAll: downloadAllPrompts,
+              onDownloadZip: downloadOptimizedRagZip,
+              onDownloadMap: downloadStudyMap,
+              onCopyInstructions: () => copyToClipboard(plan.gptSystemInstructions, 'sys-inst'),
+              onToggleMapPreview: () => setShowMapPreview(!showMapPreview),
+            } satisfies ResultsContextValue}>
+              <ResultsSection />
+            </ResultsContext.Provider>
           )}
         </AnimatePresence>
       </main>

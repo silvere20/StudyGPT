@@ -8,46 +8,18 @@ import {
 import { cn, countWords } from '../utils';
 import { LazyMarkdown } from './LazyMarkdown';
 import { SetupPanel } from './SetupPanel';
-import type { StudyPlan, Chapter } from '../api/client';
-import type { UploadedFile } from '../types';
+import { useResultsContext } from '../context/ResultsContext';
 
-interface Props {
-  plan: StudyPlan;
-  files: UploadedFile[];
-  filteredChapters: Chapter[];
-  expandedChapters: Set<string>;
-  filterQuery: string;
-  zipFileCount: number;
-  totalWords: number;
-  zipGenerating: boolean;
-  copiedId: string | null;
-  showSetup: boolean;
-  showMapPreview: boolean;
-  topicRefs: React.MutableRefObject<Map<number, HTMLDivElement>>;
-  onToggleSetup: () => void;
-  onToggleChapter: (id: string) => void;
-  onSetFilterQuery: (q: string) => void;
-  onExpandAll: () => void;
-  onCollapseAll: () => void;
-  onScrollToTopic: (idx: number) => void;
-  onCopyChapterPrompt: (chapter: Chapter, copyId: string) => void;
-  onCopyAll: () => void;
-  onDownloadAll: () => void;
-  onDownloadZip: () => void;
-  onDownloadMap: () => void;
-  onCopyInstructions: () => void;
-  onToggleMapPreview: () => void;
-}
+export function ResultsSection() {
+  const {
+    plan, files, filteredChapters, expandedChapters, filterQuery,
+    zipFileCount, totalWords, copiedId,
+    showSetup, showMapPreview, topicRefs,
+    onToggleSetup, onToggleChapter, onSetFilterQuery,
+    onExpandAll, onCollapseAll, onScrollToTopic,
+    onCopyChapterPrompt, onCopyAll, onDownloadAll,
+  } = useResultsContext();
 
-export function ResultsSection({
-  plan, files, filteredChapters, expandedChapters, filterQuery,
-  zipFileCount, totalWords, zipGenerating, copiedId,
-  showSetup, showMapPreview, topicRefs,
-  onToggleSetup, onToggleChapter, onSetFilterQuery,
-  onExpandAll, onCollapseAll, onScrollToTopic,
-  onCopyChapterPrompt, onCopyAll, onDownloadAll,
-  onDownloadZip, onDownloadMap, onCopyInstructions, onToggleMapPreview,
-}: Props) {
   return (
     <motion.div
       key="results"
@@ -102,19 +74,7 @@ export function ResultsSection({
 
       {/* Setup panel */}
       <AnimatePresence>
-        {showSetup && (
-          <SetupPanel
-            plan={plan}
-            zipFileCount={zipFileCount}
-            zipGenerating={zipGenerating}
-            showMapPreview={showMapPreview}
-            copiedId={copiedId}
-            onDownloadZip={onDownloadZip}
-            onDownloadMap={onDownloadMap}
-            onCopyInstructions={onCopyInstructions}
-            onToggleMapPreview={onToggleMapPreview}
-          />
-        )}
+        {showSetup && <SetupPanel />}
       </AnimatePresence>
 
       {/* Main grid */}
