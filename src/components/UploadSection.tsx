@@ -1,9 +1,16 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { motion } from 'motion/react';
-import { FileText, Upload, Loader2, Check, AlertCircle, ArrowRight, X, GripVertical } from 'lucide-react';
+import { FileText, Upload, Loader2, Check, AlertCircle, ArrowRight, X, GripVertical, ArrowUpAZ, ArrowDownAZ, GripHorizontal } from 'lucide-react';
 import { cn, formatFileSize } from '../utils';
 import type { UploadedFile, HealthStatus } from '../types';
+
+type SortMode = 'naam-asc' | 'naam-desc' | 'custom';
+
+const SORT_COMPARE: Record<Exclude<SortMode, 'custom'>, (a: UploadedFile, b: UploadedFile) => number> = {
+  'naam-asc':  (a, b) => a.file.name.localeCompare(b.file.name, undefined, { numeric: true, sensitivity: 'base' }),
+  'naam-desc': (a, b) => b.file.name.localeCompare(a.file.name, undefined, { numeric: true, sensitivity: 'base' }),
+};
 
 interface Props {
   files: UploadedFile[];
@@ -13,12 +20,26 @@ interface Props {
   onRefreshHealth: () => void;
   onRemoveFile: (idx: number) => void;
   onReorderFiles: (from: number, to: number) => void;
+  onSortFiles: (compareFn: (a: UploadedFile, b: UploadedFile) => number) => void;
   onGenerate: () => void;
 }
 
-export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRefreshHealth, onRemoveFile, onReorderFiles, onGenerate }: Props) {
+export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRefreshHealth, onRemoveFile, onReorderFiles, onSortFiles, onGenerate }: Props) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>('naam-asc');
+  const prevLengthRef = useRef(files.length);
+
+  // When files are added (hook re-sorts naam-asc automatically), reflect that in sortMode.
+  useEffect(() => {
+    if (files.length > prevLengthRef.current) setSortMode('naam-asc');
+    prevLengthRef.current = files.length;
+  }, [files.length]);
+
+  const applySort = (mode: Exclude<SortMode, 'custom'>) => {
+    setSortMode(mode);
+    onSortFiles(SORT_COMPARE[mode]);
+  };
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
@@ -130,6 +151,48 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
           animate={{ opacity: 1, y: 0 }}
           className="mt-6 space-y-3"
         >
+          {/* Sort bar */}
+          <div className="flex items-center gap-2 flex-wrap px-1">
+            <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide shrink-0">
+              Volgorde:
+            </span>
+            <button
+              onClick={() => applySort('naam-asc')}
+              title="Sorteer op bestandsnaam, cijfers eerst (1, 2, 3 … A, B, C)"
+              className={cn(
+                "flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors",
+                sortMode === 'naam-asc'
+                  ? "bg-orange-500 text-white border-orange-500"
+                  : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-orange-300 dark:hover:border-orange-600"
+              )}
+            >
+              <ArrowUpAZ className="w-3.5 h-3.5" />
+              Naam (1→9, A→Z)
+            </button>
+            <button
+              onClick={() => applySort('naam-desc')}
+              title="Sorteer op bestandsnaam omgekeerd (Z, Y … 9, 8, 1)"
+              className={cn(
+                "flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors",
+                sortMode === 'naam-desc'
+                  ? "bg-orange-500 text-white border-orange-500"
+                  : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-600 hover:border-orange-300 dark:hover:border-orange-600"
+              )}
+            >
+              <ArrowDownAZ className="w-3.5 h-3.5" />
+              Naam (9→1, Z→A)
+            </button>
+            {sortMode === 'custom' && (
+              <span
+                title="Volgorde handmatig aangepast via slepen"
+                className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-600"
+              >
+                <GripHorizontal className="w-3.5 h-3.5" />
+                Aangepast (eigen volgorde)
+              </span>
+            )}
+          </div>
+
           {files.map((fMeta, idx) => {
             const isDragging = dragIdx === idx;
             const isOver = overIdx === idx && !isDragging;
@@ -148,7 +211,10 @@ export function UploadSection({ files, onDrop, healthStatus, healthMessage, onRe
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  if (dragIdx !== null && dragIdx !== idx) onReorderFiles(dragIdx, idx);
+                  if (dragIdx !== null && dragIdx !== idx) {
+                    onReorderFiles(dragIdx, idx);
+                    setSortMode('custom');
+                  }
                   setDragIdx(null);
                   setOverIdx(null);
                 }}

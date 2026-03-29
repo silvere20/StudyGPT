@@ -44,6 +44,7 @@ export default function App() {
     } catch { return DEFAULT_PROMPT_TEMPLATE; }
   });
   const topicRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const didShowRestoredToastRef = useRef(false);
 
   // ── Topic order ──
   // Loaded from localStorage; validated against plan.topics so stale orders are discarded.
@@ -120,7 +121,8 @@ export default function App() {
   }, [plan]);
 
   useEffect(() => {
-    if (plan) {
+    if (plan && !didShowRestoredToastRef.current) {
+      didShowRestoredToastRef.current = true;
       toast.info('Vorig studieplan geladen vanuit opslag.', { duration: 3000 });
     }
   // Only run once on mount — plan is intentionally omitted from deps
@@ -191,9 +193,33 @@ export default function App() {
     return true;
   }, [refreshHealth]);
 
+  // ── Prompt template hooks (no dependency on useDocumentProcessor — must stay above it) ──
+  useEffect(() => {
+    try {
+      if (promptTemplate === DEFAULT_PROMPT_TEMPLATE) {
+        localStorage.removeItem('studyflow_prompt_template');
+      } else {
+        localStorage.setItem('studyflow_prompt_template', promptTemplate);
+      }
+    } catch { /* storage unavailable */ }
+  // DEFAULT_PROMPT_TEMPLATE is a stable constant — no need in deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptTemplate]);
+
+  const onSetPromptTemplate = useCallback((t: string) => setPromptTemplate(t), []);
+  const onResetPromptTemplate = useCallback(() => setPromptTemplate(DEFAULT_PROMPT_TEMPLATE), []);
+
+  const formatPrompt = useCallback((chapter: Chapter) =>
+    promptTemplate
+      .replace(/\{topic\}/g, chapter.topic)
+      .replace(/\{title\}/g, chapter.title)
+      .replace(/\{summary\}/g, chapter.summary)
+      .replace(/\{content\}/g, chapter.content),
+  [promptTemplate]);
+
   const {
     files, loading, progressMessage, progressPercent, fileProgress, connectionError,
-    onDrop, removeFile, reorderFiles, handleGenerate, handleCancel, resetFiles,
+    onDrop, removeFile, reorderFiles, sortFiles, handleGenerate, handleCancel, resetFiles,
   } = useDocumentProcessor(onSuccess, onBeforeGenerate);
 
   const copyToClipboard = (text: string, id: string) => {
@@ -217,29 +243,6 @@ export default function App() {
     URL.revokeObjectURL(url);
     toast.success('Master Study Map gedownload!');
   };
-
-  useEffect(() => {
-    try {
-      if (promptTemplate === DEFAULT_PROMPT_TEMPLATE) {
-        localStorage.removeItem('studyflow_prompt_template');
-      } else {
-        localStorage.setItem('studyflow_prompt_template', promptTemplate);
-      }
-    } catch { /* storage unavailable */ }
-  // DEFAULT_PROMPT_TEMPLATE is a stable constant — no need in deps
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [promptTemplate]);
-
-  const onSetPromptTemplate = useCallback((t: string) => setPromptTemplate(t), []);
-  const onResetPromptTemplate = useCallback(() => setPromptTemplate(DEFAULT_PROMPT_TEMPLATE), []);
-
-  const formatPrompt = useCallback((chapter: Chapter) =>
-    promptTemplate
-      .replace(/\{topic\}/g, chapter.topic)
-      .replace(/\{title\}/g, chapter.title)
-      .replace(/\{summary\}/g, chapter.summary)
-      .replace(/\{content\}/g, chapter.content),
-  [promptTemplate]);
 
   // Build chapter list in topic order (respects user reordering)
   const orderedChapters = (targetPlan: StudyPlan): Chapter[] =>
@@ -488,8 +491,8 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
   );
 
   const zipFileCount = useMemo(
-    () => (plan ? 2 + plan.topics.length : 0),
-    [plan],
+    () => (plan ? 2 + topicOrder.length : 0),
+    [plan, topicOrder],
   );
 
   // ── RENDER ──
@@ -566,6 +569,7 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
               onRefreshHealth={() => void refreshHealth()}
               onRemoveFile={removeFile}
               onReorderFiles={reorderFiles}
+              onSortFiles={sortFiles}
               onGenerate={handleGenerate}
             />
           ) : (

@@ -16,6 +16,7 @@ export type ProcessorActions = {
   onDrop: (acceptedFiles: File[]) => void;
   removeFile: (idx: number) => void;
   reorderFiles: (from: number, to: number) => void;
+  sortFiles: (compareFn: (a: UploadedFile, b: UploadedFile) => number) => void;
   handleGenerate: () => Promise<void>;
   handleCancel: () => void;
   resetFiles: () => void;
@@ -80,6 +81,10 @@ export function useDocumentProcessor(
       next.splice(to, 0, removed);
       return next;
     });
+  }, []);
+
+  const sortFiles = useCallback((compareFn: (a: UploadedFile, b: UploadedFile) => number) => {
+    setFiles(prev => [...prev].sort(compareFn));
   }, []);
 
   const handleGenerate = useCallback(async () => {
@@ -201,6 +206,7 @@ export function useDocumentProcessor(
     onDrop,
     removeFile,
     reorderFiles,
+    sortFiles,
     handleGenerate,
     handleCancel,
     resetFiles,
