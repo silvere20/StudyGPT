@@ -212,6 +212,42 @@ Bij extreem grote scanpagina's splitst de OCR-laag PDF-pagina's en afbeeldingen 
 - **Testbewijs:** `backend/.venv/bin/python -m pytest backend/tests` groen met extra `test_build_tile_boxes_splits_extremely_large_images`; `npm run lint` groen.
 - **Resterend risico:** bij uitzonderlijk exotische paginaformaten kan OCR nog steeds traag zijn, omdat de backend dan meerdere tiles sequentieel moet verwerken.
 
+## Componentstructuur Frontend (na refactor 2026-03-29)
+
+### Overzicht nieuwe bestanden
+De monolithische `src/App.tsx` (±1200 regels) is opgesplitst in kleinere, herbruikbare bestanden.
+
+### Gedeelde types en utilities
+| Bestand | Inhoud |
+|---------|--------|
+| `src/types.ts` | `UploadedFile`, `FileProgressInfo`, `HealthStatus`, `HealthSnapshot` — gedeelde TypeScript-types voor upload- en health-state. |
+| `src/utils.ts` | `cn()` (Tailwind merge), `formatFileSize()`, `countWords()`, `sanitizeFilename()` — puur functionele helpers zonder React-afhankelijkheden. |
+
+### Hooks
+| Bestand | Verantwoordelijkheid |
+|---------|----------------------|
+| `src/hooks/useDocumentProcessor.ts` | Beheert de volledige upload-verwerking: bestandslijst, drop-deduplicatie, SSE-streaming voortgang per bestand, annuleren via `AbortController`, en succes/fout-callbacks. App.tsx geeft `onSuccess` en `onBeforeGenerate` door; de hook beheert alle eigen state en refs. |
+
+### Componenten
+| Bestand | Toont | Ontvangt van App.tsx |
+|---------|-------|----------------------|
+| `src/components/ProgressBar.tsx` | Verwerkingsscherm: globale voortgangsbalk, per-bestand status (wachtend/bezig/klaar/fout) én `SkeletonLoader` als preview. | `progressMessage`, `progressPercent`, `files`, `fileProgress`, `onCancel` |
+| `src/components/SkeletonLoader.tsx` | Geanimeerde skeletskeleton van de toekomstige resultatenkaarten: stats-balk, onderwerpssidebar en drie hoofdstukkaarten. Geeft gebruikers visuele feedback over de eindvorm. | — (geen props) |
+| `src/components/UploadSection.tsx` | Uploadscherm: dropzone (inclusief eigen `useDropzone`), health-status banner, bestandslijst met verwijderknop, genereer-knop en de drie instructiestappen onderaan. | `files`, `onDrop`, `healthStatus`, `healthMessage`, `onRefreshHealth`, `onRemoveFile`, `onGenerate` |
+| `src/components/SetupPanel.tsx` | Geanimeerd GPT-instellingenpaneel: RAG ZIP download, Master Map preview, System Instructions kopiëren. Verschijnt boven de resultatenkaarten na genereren. | `plan`, `zipFileCount`, `zipGenerating`, `showMapPreview`, `copiedId`, diverse callbacks |
+| `src/components/ResultsSection.tsx` | Volledig resultatenweergave: stats-balk, GPT Setup Guide toggle, onderwerpssidebar met scroll-navigatie, zoekbalk, collapse/expand all en hoofdstukkaarten per onderwerp. Rendert `SetupPanel` intern. | `plan`, `files`, `filteredChapters`, `expandedChapters`, `filterQuery`, `zipFileCount`, `totalWords`, `zipGenerating`, `copiedId`, `showSetup`, `showMapPreview`, `topicRefs`, diverse callbacks |
+| `src/components/LazyMarkdown.tsx` | Lazy-loaded Markdown renderer voor zware content in chapter-cards en Master Map preview. | `children`, `loadingLabel` |
+
+### Wat App.tsx nog beheert
+- Alle React state (`plan`, `copiedId`, `showSetup`, `showMapPreview`, `expandedChapters`, `healthStatus`, `filterQuery`, `zipGenerating`)
+- Health-check logica (`refreshHealth`, `applyHealthSnapshot`)
+- Plan-state reset (`resetPlanState`, `onSuccess`)
+- Download-functies (`downloadStudyMap`, `downloadAllPrompts`, `downloadOptimizedRagZip`)
+- Prompt-formatting (`formatPrompt`, `copyAllPrompts`)
+- Navigatie (`scrollToTopic`, `toggleChapter`)
+- Afgeleide waarden (`filteredChapters`, `totalWords`, `zipFileCount`)
+- Header-JSX en de `<style>` tag voor de custom scrollbar
+
 ## Prestatiebevindingen
 - Initiële frontendbundle is teruggebracht van ongeveer **737 kB** naar ongeveer **486 kB** voor het grootste chunkbestand.
 - De eerdere Vite chunk warning is verdwenen na lazy-loading van Markdown en ZIP-export.

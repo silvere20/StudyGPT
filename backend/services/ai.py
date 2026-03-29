@@ -5,7 +5,7 @@ import math
 import re
 from collections.abc import Awaitable, Callable
 
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from pydantic import BaseModel
 
 from models.schemas import Chapter, StudyPlan
@@ -16,6 +16,7 @@ _client: AsyncOpenAI | None = None
 
 ProgressCallback = Callable[[str, int, str], Awaitable[None]]
 DOCUMENT_SEPARATOR = "\n\n---\n\n"
+_RETRY_DELAYS = (1, 2, 4)  # exponential backoff in seconden voor 429/503
 TARGET_CHUNK_CHARS = 60_000
 HARD_CHUNK_CHARS = 80_000
 MIN_RECURSIVE_CHUNK_CHARS = 4_000
@@ -372,22 +373,57 @@ async def _generate_chunk_chapters(
 
 
 async def _call_json_completion(*, system_prompt: str, user_content: str) -> dict:
+    """Voert een OpenAI JSON-completion uit met automatische retry bij 429/503.
+
+    Bij een RateLimitError (429) of ServiceUnavailableError (503) wordt maximaal
+    3 keer opnieuw geprobeerd met exponential backoff: 1s, 2s, 4s.
+    Alle andere fouten worden direct doorgegeven aan de aanroeper.
+    """
     client = _get_client()
-    response = await client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.1,
-    )
+    last_exc: APIStatusError | None = None
 
-    text = response.choices[0].message.content
-    if not text:
-        raise ValueError("Empty response from OpenAI")
+    for attempt, delay in enumerate((None, *_RETRY_DELAYS)):
+        if delay is not None:
+            logger.warning(
+                "OpenAI API %s-fout (poging %s/%s): %s — opnieuw proberen in %ss...",
+                last_exc.status_code if last_exc else "?",
+                attempt,
+                1 + len(_RETRY_DELAYS),
+                last_exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
 
-    return json.loads(text)
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
+
+            text = response.choices[0].message.content
+            if not text:
+                raise ValueError("Empty response from OpenAI")
+
+            return json.loads(text)
+
+        except APIStatusError as exc:
+            if exc.status_code not in (429, 503):
+                raise
+            last_exc = exc
+            if attempt >= len(_RETRY_DELAYS):
+                logger.error(
+                    "OpenAI API %s-fout na %s pogingen — geen retries meer.",
+                    exc.status_code,
+                    1 + len(_RETRY_DELAYS),
+                )
+                raise
+
+    raise RuntimeError("Unreachable")  # mypy safety
 
 
 def _parse_full_study_plan(parsed: dict) -> StudyPlan:
