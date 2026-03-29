@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { BookOpen, Loader2, Moon, Package, RotateCcw, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
@@ -344,20 +344,38 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
     });
   };
 
-  // Derived
-  const filteredChapters = plan
-    ? filterQuery.trim()
-      ? plan.chapters.filter(ch =>
-          ch.title.toLowerCase().includes(filterQuery.toLowerCase()) ||
-          ch.topic.toLowerCase().includes(filterQuery.toLowerCase()) ||
-          ch.summary.toLowerCase().includes(filterQuery.toLowerCase()) ||
-          ch.content.toLowerCase().includes(filterQuery.toLowerCase())
-        )
-      : plan.chapters
-    : [];
+  // Derived — memoized to avoid re-scanning chapter content on every render
 
-  const totalWords = plan ? plan.chapters.reduce((sum, ch) => sum + countWords(ch.content), 0) : 0;
-  const zipFileCount = plan ? 2 + plan.topics.length : 0;
+  // Normalise once per plan; reused by the filter below
+  const normalizedChapters = useMemo(
+    () => plan?.chapters.map(ch => ({
+      ch,
+      title:   ch.title.toLowerCase(),
+      topic:   ch.topic.toLowerCase(),
+      summary: ch.summary.toLowerCase(),
+      content: ch.content.toLowerCase(),
+    })) ?? [],
+    [plan],
+  );
+
+  const filteredChapters = useMemo(() => {
+    if (!plan) return [];
+    const q = filterQuery.trim().toLowerCase();
+    if (!q) return plan.chapters;
+    return normalizedChapters
+      .filter(n => n.title.includes(q) || n.topic.includes(q) || n.summary.includes(q) || n.content.includes(q))
+      .map(n => n.ch);
+  }, [plan, filterQuery, normalizedChapters]);
+
+  const totalWords = useMemo(
+    () => plan?.chapters.reduce((sum, ch) => sum + countWords(ch.content), 0) ?? 0,
+    [plan],
+  );
+
+  const zipFileCount = useMemo(
+    () => (plan ? 2 + plan.topics.length : 0),
+    [plan],
+  );
 
   // ── RENDER ──
 
