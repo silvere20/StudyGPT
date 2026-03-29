@@ -29,6 +29,12 @@ export default function App() {
   const [healthMessage, setHealthMessage] = useState('Backend controleren...');
   const [filterQuery, setFilterQuery] = useState('');
   const [zipGenerating, setZipGenerating] = useState(false);
+  const [studiedChapters, setStudiedChapters] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('studyflow_progress');
+      return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
+    } catch { return new Set(); }
+  });
   const topicRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const [darkMode, setDarkMode] = useState(() =>
@@ -95,14 +101,35 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Persist study progress
+  useEffect(() => {
+    try {
+      localStorage.setItem('studyflow_progress', JSON.stringify([...studiedChapters]));
+    } catch { /* storage unavailable */ }
+  }, [studiedChapters]);
+
+  const onToggleStudied = useCallback((id: string) => {
+    setStudiedChapters(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const onClearProgress = useCallback(() => {
+    setStudiedChapters(new Set());
+  }, []);
+
   const resetPlanState = useCallback(() => {
     setPlan(null);
     setShowSetup(false);
     setShowMapPreview(false);
     setExpandedChapters(new Set());
     setFilterQuery('');
+    setStudiedChapters(new Set());
     topicRefs.current.clear();
     try { localStorage.removeItem('studyflow_plan'); } catch { /* storage unavailable */ }
+    try { localStorage.removeItem('studyflow_progress'); } catch { /* storage unavailable */ }
   }, []);
 
   const onSuccess = useCallback((result: StudyPlan) => {
@@ -499,6 +526,9 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
               onCollapseAll: () => setExpandedChapters(new Set()),
               onScrollToTopic: scrollToTopic,
               onCopyChapterPrompt: (chapter, id) => copyToClipboard(formatPrompt(chapter), id),
+              studiedChapters,
+              onToggleStudied,
+              onClearProgress,
               onCopyAll: copyAllPrompts,
               onDownloadAll: downloadAllPrompts,
               onDownloadZip: downloadOptimizedRagZip,

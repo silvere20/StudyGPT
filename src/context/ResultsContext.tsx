@@ -22,6 +22,9 @@ export interface ResultsContextValue {
   onCollapseAll: () => void;
   onScrollToTopic: (idx: number) => void;
   onCopyChapterPrompt: (chapter: Chapter, copyId: string) => void;
+  studiedChapters: Set<string>;
+  onToggleStudied: (id: string) => void;
+  onClearProgress: () => void;
   onCopyAll: () => void;
   onDownloadAll: () => void;
   onDownloadZip: () => void;
