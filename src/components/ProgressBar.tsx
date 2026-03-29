@@ -1,6 +1,7 @@
-import { Loader2, CheckCircle2, AlertCircle, Clock, X } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertCircle, Clock, X, WifiOff, Timer } from 'lucide-react';
 import { cn, formatFileSize } from '../utils';
 import type { UploadedFile, FileProgressInfo } from '../types';
+import type { ConnectionErrorType } from '../api/client';
 import { SkeletonLoader } from './SkeletonLoader';
 
 interface Props {
@@ -9,9 +10,30 @@ interface Props {
   files: UploadedFile[];
   fileProgress: Map<number, FileProgressInfo>;
   onCancel: () => void;
+  connectionErrorType?: ConnectionErrorType | null;
 }
 
-export function ProgressBar({ progressMessage, progressPercent, files, fileProgress, onCancel }: Props) {
+const CONNECTION_ERROR_CONFIG: Record<ConnectionErrorType, { icon: typeof AlertCircle; label: string; className: string }> = {
+  offline: {
+    icon: WifiOff,
+    label: 'Backend niet bereikbaar — opnieuw verbinden...',
+    className: 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300',
+  },
+  timeout: {
+    icon: Timer,
+    label: 'Verbinding time-out — verwerking duurt te lang.',
+    className: 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300',
+  },
+  'stream-end': {
+    icon: AlertCircle,
+    label: 'Verbinding verbroken — stroom onverwacht gestopt, opnieuw proberen...',
+    className: 'bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-300',
+  },
+};
+
+export function ProgressBar({ progressMessage, progressPercent, files, fileProgress, onCancel, connectionErrorType }: Props) {
+  const errorConfig = connectionErrorType ? CONNECTION_ERROR_CONFIG[connectionErrorType] : null;
+
   return (
     <div className="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-3xl p-8 border border-gray-200 dark:border-gray-700 shadow-xl">
       <div className="text-center mb-8">
@@ -28,6 +50,19 @@ export function ProgressBar({ progressMessage, progressPercent, files, fileProgr
           />
         </div>
         <p className="text-center text-sm text-gray-400 mt-2">{progressPercent}%</p>
+
+        {errorConfig && (() => {
+          const Icon = errorConfig.icon;
+          return (
+            <div className={cn(
+              'mt-3 px-4 py-2.5 rounded-lg text-sm flex items-center gap-2 border',
+              errorConfig.className,
+            )}>
+              <Icon className="w-4 h-4 shrink-0" />
+              {errorConfig.label}
+            </div>
+          );
+        })()}
       </div>
 
       <div className="space-y-3">

@@ -157,7 +157,7 @@ export default function App() {
   }, [refreshHealth]);
 
   const {
-    files, loading, progressMessage, progressPercent, fileProgress,
+    files, loading, progressMessage, progressPercent, fileProgress, connectionErrorType,
     onDrop, removeFile, handleGenerate, handleCancel, resetFiles,
   } = useDocumentProcessor(onSuccess, onBeforeGenerate);
 
@@ -521,6 +521,7 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
                 files={files}
                 fileProgress={fileProgress}
                 onCancel={handleCancel}
+                connectionErrorType={connectionErrorType}
               />
             </motion.div>
           ) : !plan ? (

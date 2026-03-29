@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { processDocuments, type StudyPlan, type ProgressUpdate } from '../api/client';
+import { processDocuments, type StudyPlan, type ProgressUpdate, type ConnectionErrorType } from '../api/client';
 import type { UploadedFile, FileProgressInfo } from '../types';
 
 export type ProcessorState = {
@@ -9,6 +9,7 @@ export type ProcessorState = {
   progressMessage: string;
   progressPercent: number;
   fileProgress: Map<number, FileProgressInfo>;
+  connectionErrorType: ConnectionErrorType | null;
 };
 
 export type ProcessorActions = {
@@ -28,9 +29,11 @@ export function useDocumentProcessor(
   const [progressMessage, setProgressMessage] = useState('');
   const [progressPercent, setProgressPercent] = useState(0);
   const [fileProgress, setFileProgress] = useState<Map<number, FileProgressInfo>>(new Map());
+  const [connectionErrorType, setConnectionErrorType] = useState<ConnectionErrorType | null>(null);
 
   const isCancelledRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const lastProgressMessageRef = useRef('');
 
   const resetProcessingState = useCallback(() => {
     abortControllerRef.current = null;
@@ -38,6 +41,7 @@ export function useDocumentProcessor(
     setProgressMessage('');
     setProgressPercent(0);
     setFileProgress(new Map());
+    setConnectionErrorType(null);
   }, []);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -76,7 +80,9 @@ export function useDocumentProcessor(
     isCancelledRef.current = false;
     abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
+    lastProgressMessageRef.current = '';
     setLoading(true);
+    setConnectionErrorType(null);
     setProgressMessage('Bestanden uploaden naar server...');
     setProgressPercent(5);
 
@@ -91,6 +97,8 @@ export function useDocumentProcessor(
         files.map(f => f.file),
         (update: ProgressUpdate) => {
           if (isCancelledRef.current) return;
+          lastProgressMessageRef.current = update.message;
+          setConnectionErrorType(null); // clear error banner on successful progress event
           setProgressMessage(update.message);
           setProgressPercent(update.progress);
 
@@ -130,7 +138,17 @@ export function useDocumentProcessor(
           resetProcessingState();
           toast.error(message);
         },
-        { signal: abortControllerRef.current.signal }
+        {
+          signal: abortControllerRef.current.signal,
+          onConnectionError: (type: ConnectionErrorType) => {
+            if (isCancelledRef.current) return;
+            setConnectionErrorType(type);
+            // Restore last known progress message so the UI stays where it was
+            if (lastProgressMessageRef.current) {
+              setProgressMessage(lastProgressMessageRef.current);
+            }
+          },
+        }
       );
     } catch (error) {
       const isAbortError = error instanceof Error && error.name === 'AbortError';
@@ -158,6 +176,7 @@ export function useDocumentProcessor(
     progressMessage,
     progressPercent,
     fileProgress,
+    connectionErrorType,
     onDrop,
     removeFile,
     handleGenerate,
