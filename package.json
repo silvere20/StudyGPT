@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently --names \"frontend,backend\" --prefix-colors \"cyan,yellow\" \"npm run dev:frontend\" \"npm run dev:backend\"",
-    "dev:frontend": "vite --host 127.0.0.1 --port 3000",
+    "dev:frontend": "vite --host 127.0.0.1",
     "dev:backend": "cd backend && .venv/bin/python -m uvicorn main:app --reload --port 8000",
     "dashboard": "concurrently --names \"frontend,backend\" --prefix-colors \"cyan,yellow\" \"npm run dashboard:frontend\" \"npm run dashboard:backend\"",
     "dashboard:frontend": "vite --host 127.0.0.1 --port 3000",
