@@ -117,6 +117,8 @@ def test_process_stream_forwards_document_and_ai_progress(monkeypatch):
         return make_plan("Generated", markdown_content)
 
     monkeypatch.setattr(main, "get_cached_result", lambda _: None)
+    monkeypatch.setattr(main, "get_cached_markdown", lambda _: None)
+    monkeypatch.setattr(main, "save_markdown_to_cache", lambda *_: None)
     monkeypatch.setattr(main, "process_document", fake_process_document)
     monkeypatch.setattr(main, "generate_study_plan", fake_generate)
     monkeypatch.setattr(main, "save_to_cache", lambda *_args, **_kwargs: None)
@@ -139,6 +141,64 @@ def test_process_stream_forwards_document_and_ai_progress(monkeypatch):
     assert terminal_events == ["result"]
 
 
+def test_multi_file_uses_markdown_cache(monkeypatch):
+    """Bestand 1 zit al in de markdown-cache; process_document mag dan niet worden aangeroepen."""
+    import hashlib
+
+    process_document_calls: list[str] = []
+
+    # Bestand 1 heeft een bekende hash → markdown-cache retourneert content
+    file1_hash = hashlib.sha256(b"file1content").hexdigest()
+
+    def fake_get_cached_markdown(file_hash: str) -> str | None:
+        if file_hash == file1_hash:
+            return "# Gecachte markdown voor bestand 1"
+        return None
+
+    async def fake_process_document(_file_path, filename, on_progress=None):
+        process_document_calls.append(filename)
+        return f"# verwerkt {filename}"
+
+    async def fake_generate(markdown_content, doc_type="auto", on_progress=None, max_retries=3):
+        return make_plan("Gegenereerd", markdown_content)
+
+    monkeypatch.setattr(main, "get_cached_result", lambda _: None)
+    monkeypatch.setattr(main, "get_cached_markdown", fake_get_cached_markdown)
+    monkeypatch.setattr(main, "save_markdown_to_cache", lambda *_: None)
+    monkeypatch.setattr(main, "process_document", fake_process_document)
+    monkeypatch.setattr(main, "generate_study_plan", fake_generate)
+    monkeypatch.setattr(main, "save_to_cache", lambda *_: None)
+
+    client = TestClient(main.app)
+    with client.stream(
+        "POST",
+        "/api/process",
+        files=[
+            ("files", ("file1.txt", b"file1content", "text/plain")),
+            ("files", ("file2.txt", b"file2content", "text/plain")),
+        ],
+    ) as response:
+        text = "".join(response.iter_text())
+
+    events = parse_sse_events(text)
+
+    # process_document mag alleen voor bestand 2 zijn aangeroepen
+    assert process_document_calls == ["file2.txt"]
+
+    # Er moet een cache-event zijn voor bestand 1
+    cache_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "progress" and payload.get("step") == "cache"
+    ]
+    assert len(cache_events) >= 1
+    assert any(payload.get("fileName") == "file1.txt" for payload in cache_events)
+
+    # Stream eindigt met een result-event
+    terminal_events = [event_type for event_type, _ in events if event_type in {"result", "error"}]
+    assert terminal_events == ["result"]
+
+
 def test_process_stream_emits_single_error_terminal_event(monkeypatch):
     async def fake_process_document(_file_path, _filename, on_progress=None):
         if on_progress:
@@ -146,6 +206,8 @@ def test_process_stream_emits_single_error_terminal_event(monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(main, "get_cached_result", lambda _: None)
+    monkeypatch.setattr(main, "get_cached_markdown", lambda _: None)
+    monkeypatch.setattr(main, "save_markdown_to_cache", lambda *_: None)
     monkeypatch.setattr(main, "process_document", fake_process_document)
 
     client = TestClient(main.app)

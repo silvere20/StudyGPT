@@ -24,3 +24,17 @@ def get_cached_result(file_hash: str) -> StudyPlan | None:
 def save_to_cache(file_hash: str, plan: StudyPlan) -> None:
     cache_file = CACHE_DIR / f"{file_hash}.json"
     cache_file.write_text(plan.model_dump_json(indent=2))
+
+
+def get_cached_markdown(file_hash: str) -> str | None:
+    """Return cached extracted markdown for a file, or None if not cached."""
+    cache_file = CACHE_DIR / f"md_{file_hash}.txt"
+    if cache_file.exists():
+        return cache_file.read_text(encoding="utf-8")
+    return None
+
+
+def save_markdown_to_cache(file_hash: str, markdown: str) -> None:
+    """Cache extracted markdown for a file."""
+    cache_file = CACHE_DIR / f"md_{file_hash}.txt"
+    cache_file.write_text(markdown, encoding="utf-8")

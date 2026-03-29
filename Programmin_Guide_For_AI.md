@@ -56,6 +56,14 @@ Bij extreem grote scanpagina's splitst de OCR-laag PDF-pagina's en afbeeldingen 
 
 ## Wijzigingslog
 
+### 2026-03-29 - Per-bestand extractie-cache toegevoegd
+- **Bestanden:** [backend/services/cache.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/services/cache.py), [backend/main.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/main.py), [backend/tests/test_main.py](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/backend/tests/test_main.py)
+- **Doel:** herverwerking van al bekende bestanden vermijden bij multi-file uploads.
+- **Wijzigingen:** `get_cached_markdown` / `save_markdown_to_cache` toegevoegd aan `cache.py` (slaan `md_{hash}.txt` op naast `{hash}.json`); in `event_stream()` wordt de bestandshash nu altijd berekend; vóór `process_document` wordt de markdown-cache geraadpleegd; bij een hit wordt een `step="cache"` SSE-event verstuurd en het bestand overgeslagen; bij een miss wordt na verwerking de markdown opgeslagen; de StudyPlan-cache voor single-file uploads blijft ongewijzigd als tweede laag.
+- **Gedragsimpact:** repeat-bestanden slaan docling/OCR over en hergebruiken gecachte markdown, ook als ze samen met nieuwe bestanden worden geüpload.
+- **Testbewijs:** nieuwe regressietest `test_multi_file_uses_markdown_cache` groen.
+- **Resterend risico:** markdown-cache heeft geen TTL; handmatig de `backend/cache/` map legen bij structurele extractiewijzigingen.
+
 ### 2026-03-29 - CI/CD pipeline toegevoegd
 - **Bestand:** [.github/workflows/ci.yml](/Users/silvereoosterlen/Desktop/Projecten/Study-GPT-Google/.github/workflows/ci.yml)
 - **Doel:** automatisch tests en lint afdwingen bij elke push en pull request.

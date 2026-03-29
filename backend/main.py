@@ -14,7 +14,13 @@ from fastapi.responses import StreamingResponse
 
 from models.schemas import ProcessingResult
 from services.ai import generate_study_plan
-from services.cache import get_cached_result, get_file_hash, save_to_cache
+from services.cache import (
+    get_cached_markdown,
+    get_cached_result,
+    get_file_hash,
+    save_markdown_to_cache,
+    save_to_cache,
+)
 from services.document import process_document
 
 load_dotenv()
@@ -55,7 +61,7 @@ async def process_files(files: list[UploadFile] = File(...)):
             all_markdown = []
             total_files = len(files)
             use_cache = total_files == 1
-            cached_file_hash: str | None = None
+            file_hash: str | None = None
 
             for idx, upload_file in enumerate(files):
                 file_num = idx + 1
@@ -64,10 +70,12 @@ async def process_files(files: list[UploadFile] = File(...)):
                 # Read file bytes
                 file_bytes = await upload_file.read()
 
-                # Cache only applies to single-file uploads
+                # Always compute hash — used by both cache layers
+                file_hash = get_file_hash(file_bytes)
+
+                # Layer 1: StudyPlan cache (single-file uploads only)
                 if use_cache:
-                    cached_file_hash = get_file_hash(file_bytes)
-                    cached = get_cached_result(cached_file_hash)
+                    cached = get_cached_result(file_hash)
                     if cached:
                         yield _sse_event(
                             "progress",
@@ -81,6 +89,24 @@ async def process_files(files: list[UploadFile] = File(...)):
                         )
                         yield _sse_event("result", cached.model_dump())
                         return
+
+                # Layer 2: Markdown extraction cache (all uploads)
+                cached_markdown = get_cached_markdown(file_hash)
+                if cached_markdown is not None:
+                    yield _sse_event(
+                        "progress",
+                        {
+                            "step": "cache",
+                            "progress": 100,
+                            "message": f"Extractie uit cache: {filename}",
+                            "fileIndex": idx,
+                            "fileName": filename,
+                        },
+                    )
+                    all_markdown.append(
+                        f"# Document: {filename}\n\n{cached_markdown}"
+                    )
+                    continue
 
                 # Save to temp file for processing
                 suffix = Path(filename).suffix
@@ -124,6 +150,7 @@ async def process_files(files: list[UploadFile] = File(...)):
                         yield progress_event
 
                     markdown = await document_task
+                    save_markdown_to_cache(file_hash, markdown)
                     all_markdown.append(
                         f"# Document: {filename}\n\n{markdown}"
                     )
@@ -169,8 +196,8 @@ async def process_files(files: list[UploadFile] = File(...)):
 
             plan = await ai_task
 
-            if use_cache and cached_file_hash:
-                save_to_cache(cached_file_hash, plan)
+            if use_cache and file_hash:
+                save_to_cache(file_hash, plan)
 
             yield _sse_event(
                 "progress",
