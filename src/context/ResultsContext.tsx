@@ -14,13 +14,15 @@ export interface ResultsContextValue {
   copiedId: string | null;
   showSetup: boolean;
   showMapPreview: boolean;
-  topicRefs: React.MutableRefObject<Map<number, HTMLDivElement>>;
+  topicOrder: string[];
+  onReorderTopics: (order: string[]) => void;
+  topicRefs: React.MutableRefObject<Map<string, HTMLDivElement>>;
   onToggleSetup: () => void;
   onToggleChapter: (id: string) => void;
   onSetFilterQuery: (q: string) => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
-  onScrollToTopic: (idx: number) => void;
+  onScrollToTopic: (topicName: string) => void;
   onCopyChapterPrompt: (chapter: Chapter, copyId: string) => void;
   studiedChapters: Set<string>;
   onToggleStudied: (id: string) => void;

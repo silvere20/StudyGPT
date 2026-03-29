@@ -38,7 +38,25 @@ export default function App() {
       return saved ? new Set(JSON.parse(saved) as string[]) : new Set();
     } catch { return new Set(); }
   });
-  const topicRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const topicRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // ── Topic order ──
+  // Loaded from localStorage; validated against plan.topics so stale orders are discarded.
+  const [topicOrder, setTopicOrder] = useState<string[]>(() => {
+    const loadedPlan = (() => {
+      try { const s = localStorage.getItem('studyflow_plan'); return s ? (JSON.parse(s) as StudyPlan) : null; } catch { return null; }
+    })();
+    if (!loadedPlan) return [];
+    try {
+      const saved = localStorage.getItem('studyflow_topic_order');
+      if (saved) {
+        const order = JSON.parse(saved) as string[];
+        const planSet = new Set(loadedPlan.topics);
+        if (order.length === loadedPlan.topics.length && order.every(t => planSet.has(t))) return order;
+      }
+    } catch { /* ignore */ }
+    return loadedPlan.topics;
+  });
 
   const [darkMode, setDarkMode] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches
@@ -104,6 +122,14 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Persist topic order (skip when it matches the plan default to keep storage clean)
+  useEffect(() => {
+    if (topicOrder.length === 0) return;
+    try { localStorage.setItem('studyflow_topic_order', JSON.stringify(topicOrder)); } catch { /* storage unavailable */ }
+  }, [topicOrder]);
+
+  const onReorderTopics = useCallback((order: string[]) => setTopicOrder(order), []);
+
   // Persist study progress
   useEffect(() => {
     try {
@@ -130,13 +156,17 @@ export default function App() {
     setExpandedChapters(new Set());
     setFilterQuery('');
     setStudiedChapters(new Set());
+    setTopicOrder([]);
     topicRefs.current.clear();
     try { localStorage.removeItem('studyflow_plan'); } catch { /* storage unavailable */ }
     try { localStorage.removeItem('studyflow_progress'); } catch { /* storage unavailable */ }
+    try { localStorage.removeItem('studyflow_topic_order'); } catch { /* storage unavailable */ }
   }, []);
 
   const onSuccess = useCallback((result: StudyPlan) => {
     setPlan(result);
+    setTopicOrder(result.topics);
+    try { localStorage.removeItem('studyflow_topic_order'); } catch { /* storage unavailable */ }
     setShowSetup(true);
     setShowMapPreview(false);
     setExpandedChapters(new Set());
@@ -212,10 +242,14 @@ export default function App() {
       .replace(/\{content\}/g, chapter.content),
   [promptTemplate]);
 
+  // Build chapter list in topic order (respects user reordering)
+  const orderedChapters = (targetPlan: StudyPlan): Chapter[] =>
+    topicOrder.flatMap(t => targetPlan.chapters.filter(c => c.topic === t));
+
   const copyAllPrompts = () => {
     if (!plan) return;
     let content = '';
-    plan.chapters.forEach((chapter, i) => {
+    orderedChapters(plan).forEach((chapter, i) => {
       content += `--- PROMPT ${i + 1}: ${chapter.topic} - ${chapter.title} ---\n\n`;
       content += `${formatPrompt(chapter)}\n\n`;
     });
@@ -228,7 +262,7 @@ export default function App() {
     content += `## Master Study Map\n\n${plan.masterStudyMap}\n\n---\n\n`;
     content += `## GPT System Instructions\n\n${plan.gptSystemInstructions}\n\n---\n\n`;
 
-    plan.chapters.forEach((chapter, i) => {
+    orderedChapters(plan).forEach((chapter, i) => {
       content += `## Prompt ${i + 1}: ${chapter.topic} - ${chapter.title}\n\n`;
       content += `${formatPrompt(chapter)}\n\n---\n\n`;
     });
@@ -252,7 +286,7 @@ export default function App() {
       const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
       const totalChapters = plan.chapters.length;
-      const totalTopics = plan.topics.length;
+      const totalTopics = topicOrder.length;
 
       const topicMap = new Map<string, Chapter[]>();
       plan.chapters.forEach(ch => {
@@ -312,7 +346,7 @@ ${plan.gptSystemInstructions}
 ## Onderwerpen & Hoofdstukken
 
 `;
-      plan.topics.forEach((topicName, topicIdx) => {
+      topicOrder.forEach((topicName, topicIdx) => {
         const chapters = topicMap.get(topicName) ?? [];
         const safeTopicName = sanitizeFilename(topicName);
         const topicFileName = `Topic_${String(topicIdx + 1).padStart(2, '0')}_${safeTopicName}.md`;
@@ -329,7 +363,7 @@ ${plan.gptSystemInstructions}
       indexContent += `---\n\n## Bestandsindex\n\n`;
       indexContent += `| # | Bestand | Onderwerpen | Hoofdstukken |\n`;
       indexContent += `|---|---------|-------------|---------------|\n`;
-      plan.topics.forEach((topicName, topicIdx) => {
+      topicOrder.forEach((topicName, topicIdx) => {
         const chapters = topicMap.get(topicName) ?? [];
         const safeTopicName = sanitizeFilename(topicName);
         const topicFileName = `Topic_${String(topicIdx + 1).padStart(2, '0')}_${safeTopicName}.md`;
@@ -339,7 +373,7 @@ ${plan.gptSystemInstructions}
       zip.file("00_MASTER_INDEX.md", indexContent);
 
       // ── 3. PER-TOPIC BESTANDEN ──
-      plan.topics.forEach((topicName, topicIdx) => {
+      topicOrder.forEach((topicName, topicIdx) => {
         const chapters = topicMap.get(topicName) ?? [];
         const safeTopicName = sanitizeFilename(topicName);
         const topicFileName = `Topic_${String(topicIdx + 1).padStart(2, '0')}_${safeTopicName}.md`;
@@ -412,8 +446,8 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
     }
   };
 
-  const scrollToTopic = (topicIdx: number) => {
-    const el = topicRefs.current.get(topicIdx);
+  const scrollToTopic = (topicName: string) => {
+    const el = topicRefs.current.get(topicName);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
@@ -548,6 +582,8 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
               showSetup,
               showMapPreview,
               topicRefs,
+              topicOrder,
+              onReorderTopics,
               onToggleSetup: () => setShowSetup(!showSetup),
               onToggleChapter: toggleChapter,
               onSetFilterQuery: setFilterQuery,

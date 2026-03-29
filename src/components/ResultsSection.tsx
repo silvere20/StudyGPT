@@ -1,10 +1,11 @@
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   FileText, Copy, Check, BookOpen,
   Settings, Download, Map as MapIcon,
   ChevronDown, ChevronUp,
   Search, ChevronsDownUp, ChevronsUpDown, Package,
-  CircleCheck, Circle, Trash2,
+  CircleCheck, Circle, Trash2, GripVertical,
 } from 'lucide-react';
 import { cn, countWords } from '../utils';
 import { LazyMarkdown } from './LazyMarkdown';
@@ -15,12 +16,17 @@ export function ResultsSection() {
   const {
     plan, files, filteredChapters, expandedChapters, filterQuery,
     zipFileCount, totalWords, copiedId,
-    showSetup, showMapPreview, topicRefs,
+    showSetup, topicRefs,
+    topicOrder, onReorderTopics,
     studiedChapters, onToggleStudied, onClearProgress,
     onToggleSetup, onToggleChapter, onSetFilterQuery,
     onExpandAll, onCollapseAll, onScrollToTopic,
     onCopyChapterPrompt, onCopyAll, onDownloadAll,
   } = useResultsContext();
+
+  // Drag-and-drop state for topic reordering
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
 
   const studiedCount = plan.chapters.filter(ch => studiedChapters.has(ch.id)).length;
   const totalChapters = plan.chapters.length;
@@ -110,48 +116,93 @@ export function ResultsSection() {
               <MapIcon className="w-5 h-5 text-gray-300 dark:text-gray-600" />
             </div>
             <div className="space-y-2">
-              {plan.topics.map((topicName, topicIdx) => {
+              {topicOrder.map((topicName, topicIdx) => {
                 const chaptersInTopic = plan.chapters.filter(c => c.topic === topicName);
                 const studiedInTopic = chaptersInTopic.filter(c => studiedChapters.has(c.id)).length;
                 const allStudied = studiedInTopic === chaptersInTopic.length;
+                const isDragging = dragIdx === topicIdx;
+                const isOver = overIdx === topicIdx && !isDragging;
+
                 return (
-                  <button
-                    key={topicIdx}
-                    onClick={() => onScrollToTopic(topicIdx)}
-                    className="w-full text-left bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 shadow-sm hover:border-orange-300 dark:hover:border-orange-500 hover:shadow-md transition-all cursor-pointer group"
+                  <div
+                    key={topicName}
+                    draggable
+                    onDragStart={(e) => {
+                      setDragIdx(topicIdx);
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (overIdx !== topicIdx) setOverIdx(topicIdx);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragIdx !== null && dragIdx !== topicIdx) {
+                        const next = [...topicOrder];
+                        const [removed] = next.splice(dragIdx, 1);
+                        next.splice(topicIdx, 0, removed);
+                        onReorderTopics(next);
+                      }
+                      setDragIdx(null);
+                      setOverIdx(null);
+                    }}
+                    onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+                    className={cn(
+                      "w-full text-left bg-white dark:bg-gray-900 border rounded-2xl shadow-sm transition-all group",
+                      isDragging   ? "opacity-40 border-orange-300 dark:border-orange-600" :
+                      isOver       ? "border-orange-400 dark:border-orange-500 shadow-md ring-2 ring-orange-300/50 dark:ring-orange-600/40" :
+                                     "border-gray-200 dark:border-gray-700 hover:border-orange-300 dark:hover:border-orange-500 hover:shadow-md"
+                    )}
                   >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-bold text-base text-gray-900 dark:text-gray-100 group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors leading-tight">{topicName}</span>
-                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                        <span className={cn(
-                          "text-xs font-bold px-2 py-1 rounded-md",
-                          allStudied
-                            ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
-                            : "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
-                        )}>
-                          {studiedInTopic}/{chaptersInTopic.length}
-                          {allStudied && ' ✓'}
-                        </span>
+                    <div className="flex items-start gap-1 p-4">
+                      {/* Drag handle */}
+                      <div
+                        className="shrink-0 mt-0.5 cursor-grab active:cursor-grabbing text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 transition-colors"
+                        title="Versleep om volgorde te wijzigen"
+                      >
+                        <GripVertical className="w-4 h-4" />
                       </div>
-                    </div>
-                    <div className="space-y-1">
-                      {chaptersInTopic.slice(0, 3).map((c, i) => (
-                        <div key={i} className="text-xs text-gray-500 dark:text-gray-400 flex items-start gap-2">
-                          <div className={cn(
-                            "w-1 h-1 rounded-full mt-1.5 shrink-0",
-                            studiedChapters.has(c.id) ? "bg-emerald-500" : "bg-orange-400"
-                          )} />
-                          <span className={cn(
-                            "leading-snug truncate",
-                            studiedChapters.has(c.id) && "line-through text-gray-400 dark:text-gray-600"
-                          )}>{c.title}</span>
+
+                      {/* Content — click scrolls to section */}
+                      <button
+                        onClick={() => onScrollToTopic(topicName)}
+                        className="flex-1 text-left"
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="font-bold text-base text-gray-900 dark:text-gray-100 group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors leading-tight">{topicName}</span>
+                          <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                            <span className={cn(
+                              "text-xs font-bold px-2 py-1 rounded-md",
+                              allStudied
+                                ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400"
+                                : "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
+                            )}>
+                              {studiedInTopic}/{chaptersInTopic.length}
+                              {allStudied && ' ✓'}
+                            </span>
+                          </div>
                         </div>
-                      ))}
-                      {chaptersInTopic.length > 3 && (
-                        <p className="text-xs text-gray-400 dark:text-gray-500 pl-3">+{chaptersInTopic.length - 3} meer</p>
-                      )}
+                        <div className="space-y-1">
+                          {chaptersInTopic.slice(0, 3).map((c, i) => (
+                            <div key={i} className="text-xs text-gray-500 dark:text-gray-400 flex items-start gap-2">
+                              <div className={cn(
+                                "w-1 h-1 rounded-full mt-1.5 shrink-0",
+                                studiedChapters.has(c.id) ? "bg-emerald-500" : "bg-orange-400"
+                              )} />
+                              <span className={cn(
+                                "leading-snug truncate",
+                                studiedChapters.has(c.id) && "line-through text-gray-400 dark:text-gray-600"
+                              )}>{c.title}</span>
+                            </div>
+                          ))}
+                          {chaptersInTopic.length > 3 && (
+                            <p className="text-xs text-gray-400 dark:text-gray-500 pl-3">+{chaptersInTopic.length - 3} meer</p>
+                          )}
+                        </div>
+                      </button>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -226,15 +277,15 @@ export function ResultsSection() {
             )}
           </div>
 
-          {/* Chapters grouped by topic */}
-          {plan.topics.map((topicName, topicIdx) => {
+          {/* Chapters grouped by topic (in user-defined order) */}
+          {topicOrder.map((topicName, topicIdx) => {
             const topicChapters = filteredChapters.filter(c => c.topic === topicName);
             if (topicChapters.length === 0) return null;
 
             return (
               <div
-                key={topicIdx}
-                ref={el => { if (el) topicRefs.current.set(topicIdx, el); else topicRefs.current.delete(topicIdx); }}
+                key={topicName}
+                ref={el => { if (el) topicRefs.current.set(topicName, el); else topicRefs.current.delete(topicName); }}
                 className="space-y-3"
               >
                 <div className="flex items-center gap-3 pt-2">
