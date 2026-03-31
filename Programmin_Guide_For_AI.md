@@ -322,6 +322,19 @@ De monolithische `src/App.tsx` (±1200 regels) is opgesplitst in kleinere, herbr
 - `npm run build`: geslaagd.
 - `py_compile` op gewijzigde Pythonbestanden: geslaagd.
 
+### 2026-03-30 - Bestandsvolgorde bevestigd en SSE result uitgebreid
+- **Bestanden:** `backend/main.py`, `backend/tests/test_main.py`
+- **Doel:** transparantie over de volgorde waarin bestanden zijn verwerkt.
+- **Bevinding:** FastAPI bewaart de volgorde van multipart-uploadbestanden als de volgorde van het `files: list[UploadFile]` argument; `asyncio.gather` in de verwerkingsloop behoudt die volgorde. De frontend-bestandsvolgorde (na drag-and-drop herschikking) komt dus correct aan bij de backend.
+- **Wijziging:** het SSE `result`-event bevat nu een extra veld `file_order: list[str]` met de bestandsnamen in de volgorde waarin ze zijn verwerkt. Dit stelt de frontend in staat om de volgorde te verifiëren.
+- **Testbewijs:** `test_result_event_contains_file_order` groen.
+
+### 2026-03-30 - Backend health-polling na startup
+- **Bestanden:** `src/App.tsx`
+- **Doel:** gebruikers direct waarschuwen als de backend crasht tijdens een actieve sessie.
+- **Wijziging:** `setInterval` van 30 seconden roept `refreshHealth(false)` aan (stille poll — geen "Backend controleren..."-flits). Bij overgang `healthy/warning → backend-offline` verschijnt een persistente error-toast (duration: Infinity). Bij herstel (`backend-offline → healthy/warning`) wordt die toast gesloten en verschijnt een korte success-toast. De polling slaat een tick over als `loading === true` (actieve verwerking). Interval wordt gecleard bij component-unmount.
+- **Gedragsimpact:** offline-backend binnen ~30 seconden zichtbaar voor de gebruiker, zonder dat zij een nieuwe actie hoeven te ondernemen.
+
 ## Bekende Risico's En Verbeterideeën
 - Voeg CI toe zodat frontend- en backendtests niet handmatig hoeven te worden bewaakt.
 - Voeg een expliciete health-indicator toe in de results-view of launcher voor backend/OpenAI-status na startup.

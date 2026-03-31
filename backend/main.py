@@ -241,7 +241,11 @@ async def process_files(files: list[UploadFile] = File(...)):
                     "message": "Studieplan succesvol gegenereerd!",
                 },
             )
-            yield _sse_event("result", plan.model_dump())
+            result_data = plan.model_dump()
+            result_data["file_order"] = [
+                f.filename or f"document_{i + 1}" for i, f in enumerate(files)
+            ]
+            yield _sse_event("result", result_data)
 
         except asyncio.CancelledError:
             logger.info("Client disconnected during /api/process stream")

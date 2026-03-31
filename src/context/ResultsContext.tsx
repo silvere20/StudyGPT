@@ -36,6 +36,9 @@ export interface ResultsContextValue {
   promptTemplate: string;
   onSetPromptTemplate: (t: string) => void;
   onResetPromptTemplate: () => void;
+  editedChapterIds: Set<string>;
+  onEditChapter: (id: string, edits: { title: string; summary: string; content: string }) => void;
+  searchInputRef: React.RefObject<HTMLInputElement | null>;
 }
 
 const ResultsContext = createContext<ResultsContextValue | null>(null);

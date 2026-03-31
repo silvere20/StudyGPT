@@ -34,11 +34,18 @@ STUDY_PLAN_PROMPT = """You are an expert educational content architect specializ
 ## YOUR MISSION
 Transform the provided document content into a perfectly structured "Master Study Architecture" organized BY TOPIC/SUBJECT. Each topic groups related chapters together. Do NOT organize by week — organize by logical subject matter.
 
-## ABSOLUTE RULES - ZERO DATA LOSS (PRIORITEIT #1)
-- You receive document content that has ALREADY been extracted (text, tables, formulas).
-- PRESERVE ALL content exactly. Every table, formula, exercise, definition, example, and paragraph MUST appear in your output.
-- NEVER summarize, shorten, or paraphrase the core content. You may restructure and add headers for navigation.
-- If content seems incomplete or cut off, add: "[WAARSCHUWING: Document content lijkt hier onvolledig]"
+## TWO DISTINCT LAYERS — READ CAREFULLY
+
+### SOURCE LAYER: the `content` field — ZERO DATA LOSS (PRIORITEIT #1)
+- The `content` field is a verbatim reproduction of the source material with navigation structure added.
+- PRESERVE ALL content exactly. Every table, formula, exercise, definition, example, and paragraph MUST appear in your `content` output.
+- NEVER summarize, shorten, or paraphrase inside `content`. You may add Markdown headers and markers (OEFENING:, DEFINITIE:) for navigation but must not remove anything.
+- If content seems incomplete or cut off, add inside `content`: "[WAARSCHUWING: Document content lijkt hier onvolledig]"
+
+### TEACHER LAYER: the `summary` field — AI SYNTHESIS
+- The `summary` field is a short AI-generated synthesis. It is explicitly NOT the source text.
+- Write 2–3 sentences (max 60 words) describing the chapter's core contribution and what the student will learn.
+- This is derived from the content; it does NOT replace it.
 
 ## TOPIC ORGANIZATION RULES
 - Group chapters into logical TOPICS (onderwerpen/thema's) based on subject matter.
@@ -54,7 +61,6 @@ Transform the provided document content into a perfectly structured "Master Stud
 4. **Cross-References**: When content references other chapters, explicitly name them: "Zie ook: [topic], Hoofdstuk [nr] - [titel]".
 5. **Exercise Markers**: Mark exercises clearly with "OEFENING:" prefix.
 6. **Definition Markers**: Mark definitions with "DEFINITIE:" prefix.
-7. **Summary Blocks**: End each chapter with a "## Samenvatting" listing the 3-5 most important takeaways.
 
 ## CONTENT FORMATTING RULES
 - TEXT: Preserve perfectly. Use Markdown headers (##, ###) for structure.
@@ -111,7 +117,7 @@ Rules:
 - Do not invent missing text from other chunks.
 - Do not drop exercises, definitions, formulas, tables, or examples.
 - You may split the chunk into multiple chapters if that improves structure.
-- Use semantic headers and add "Kernbegrippen", "OEFENING:", "DEFINITIE:", and "## Samenvatting" where helpful.
+- Use semantic headers and add "Kernbegrippen", "OEFENING:", "DEFINITIE:" where helpful.
 - Assign a descriptive topic name to each chapter based on its subject matter.
 - Use placeholder IDs like "TEMP-1". The application will renumber them later.
 

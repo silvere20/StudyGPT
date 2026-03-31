@@ -6,6 +6,7 @@ import {
   ChevronDown, ChevronUp,
   Search, ChevronsDownUp, ChevronsUpDown, Package,
   CircleCheck, Circle, Trash2, GripVertical,
+  Pencil, X, Loader2,
 } from 'lucide-react';
 import { cn, countWords } from '../utils';
 import { LazyMarkdown } from './LazyMarkdown';
@@ -22,11 +23,21 @@ export function ResultsSection() {
     onToggleSetup, onToggleChapter, onSetFilterQuery,
     onExpandAll, onCollapseAll, onScrollToTopic,
     onCopyChapterPrompt, onCopyAll, onDownloadAll,
+    editedChapterIds, onEditChapter, searchInputRef,
   } = useResultsContext();
 
   // Drag-and-drop state for topic reordering
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+
+  // Chapter inline editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ title: string; summary: string; content: string }>({
+    title: '', summary: '', content: '',
+  });
+
+  // PDF export state
+  const [pdfGenerating, setPdfGenerating] = useState(false);
 
   const studiedCount = plan.chapters.filter(ch => studiedChapters.has(ch.id)).length;
   const totalChapters = plan.chapters.length;
@@ -217,10 +228,12 @@ export function ResultsSection() {
               <div className="flex-1 min-w-48 relative">
                 <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
+                  ref={searchInputRef}
                   type="text"
                   placeholder="Zoek in hoofdstukken..."
                   value={filterQuery}
                   onChange={e => onSetFilterQuery(e.target.value)}
+                  aria-keyshortcuts="Control+f Meta+f"
                   className="w-full pl-9 pr-4 py-2 text-sm bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-300 focus:border-orange-300 transition-all"
                 />
               </div>
@@ -265,6 +278,22 @@ export function ResultsSection() {
               >
                 <Download className="w-3.5 h-3.5" />
                 Download (.md)
+              </button>
+              <button
+                onClick={async () => {
+                  setPdfGenerating(true);
+                  try {
+                    const { exportStudyPlanAsPdf } = await import('../utils/exportPdf');
+                    await exportStudyPlanAsPdf(plan, topicOrder);
+                  } finally {
+                    setPdfGenerating(false);
+                  }
+                }}
+                disabled={pdfGenerating}
+                className="text-xs font-bold bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap"
+              >
+                {pdfGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                Download PDF
               </button>
             </div>
 
@@ -334,11 +363,25 @@ export function ResultsSection() {
                                   Bestudeerd
                                 </span>
                               )}
+                              {editedChapterIds.has(chapter.id) && (
+                                <span className="text-xs font-bold text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/30 px-1.5 py-0.5 rounded-md">
+                                  bewerkt
+                                </span>
+                              )}
                             </div>
-                            <h4 className={cn(
-                              "text-xl font-bold leading-tight",
-                              isStudied ? "text-gray-500 dark:text-gray-400" : "text-gray-900 dark:text-gray-100"
-                            )}>{chapter.title}</h4>
+                            {editingId === chapter.id ? (
+                              <input
+                                autoFocus
+                                value={editDraft.title}
+                                onChange={e => setEditDraft(d => ({ ...d, title: e.target.value }))}
+                                className="w-full text-xl font-bold bg-gray-50 dark:bg-gray-800 border border-orange-300 dark:border-orange-500 rounded-lg px-3 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-orange-300"
+                              />
+                            ) : (
+                              <h4 className={cn(
+                                "text-xl font-bold leading-tight",
+                                isStudied ? "text-gray-500 dark:text-gray-400" : "text-gray-900 dark:text-gray-100"
+                              )}>{chapter.title}</h4>
+                            )}
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <button
@@ -353,24 +396,78 @@ export function ResultsSection() {
                             >
                               {isStudied ? <CircleCheck className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
                             </button>
-                            <button
-                              onClick={() => onCopyChapterPrompt(chapter, `c-${globalIdx}`)}
-                              className={cn(
-                                "flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm transition-all",
-                                copiedId === `c-${globalIdx}`
-                                  ? "bg-green-500 text-white shadow-md shadow-green-500/20"
-                                  : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
-                              )}
-                            >
-                              {copiedId === `c-${globalIdx}` ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                              {copiedId === `c-${globalIdx}` ? 'Gekopieerd' : 'Kopieer Prompt'}
-                            </button>
+                            {editingId === chapter.id ? (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    onEditChapter(chapter.id, editDraft);
+                                    setEditingId(null);
+                                  }}
+                                  className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-sm bg-orange-500 hover:bg-orange-600 text-white transition-all"
+                                >
+                                  <Check className="w-4 h-4" />
+                                  Opslaan
+                                </button>
+                                <button
+                                  onClick={() => setEditingId(null)}
+                                  className="flex items-center justify-center w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 transition-all"
+                                  title="Annuleren"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setEditDraft({ title: chapter.title, summary: chapter.summary, content: chapter.content });
+                                    setEditingId(chapter.id);
+                                  }}
+                                  title="Hoofdstuk bewerken"
+                                  aria-keyshortcuts=""
+                                  className="flex items-center justify-center w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 hover:bg-orange-50 dark:hover:bg-orange-900/30 hover:text-orange-600 dark:hover:text-orange-400 transition-all"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => onCopyChapterPrompt(chapter, `c-${globalIdx}`)}
+                                  className={cn(
+                                    "flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm transition-all",
+                                    copiedId === `c-${globalIdx}`
+                                      ? "bg-green-500 text-white shadow-md shadow-green-500/20"
+                                      : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
+                                  )}
+                                >
+                                  {copiedId === `c-${globalIdx}` ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                                  {copiedId === `c-${globalIdx}` ? 'Gekopieerd' : 'Kopieer Prompt'}
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
 
-                        <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed mb-4">
-                          {chapter.summary}
-                        </p>
+                        {editingId === chapter.id ? (
+                          <div className="space-y-2 mb-4">
+                            <textarea
+                              rows={2}
+                              value={editDraft.summary}
+                              onChange={e => setEditDraft(d => ({ ...d, summary: e.target.value }))}
+                              placeholder="Samenvatting"
+                              className="w-full text-sm bg-gray-50 dark:bg-gray-800 border border-orange-300 dark:border-orange-500 rounded-lg px-3 py-2 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-orange-300 resize-none"
+                            />
+                            <textarea
+                              rows={8}
+                              value={editDraft.content}
+                              onChange={e => setEditDraft(d => ({ ...d, content: e.target.value }))}
+                              placeholder="Volledige content"
+                              className="w-full text-sm font-mono bg-gray-50 dark:bg-gray-800 border border-orange-300 dark:border-orange-500 rounded-lg px-3 py-2 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-orange-300 resize-y"
+                            />
+                          </div>
+                        ) : (
+                          <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed mb-4">
+                            {chapter.summary}
+                          </p>
+                        )}
 
                         <button
                           onClick={() => onToggleChapter(chapter.id)}

@@ -237,6 +237,40 @@ def test_health_includes_ocr_status(monkeypatch):
     assert "nld" in body["ocr_missing_langs"]
 
 
+def test_result_event_contains_file_order(monkeypatch):
+    """result SSE event must include file_order matching the upload order."""
+    plan = make_plan("Order Test")
+
+    async def fake_process_document(_path, filename, on_progress=None):
+        return f"# {filename}"
+
+    monkeypatch.setattr(main, "get_cached_result", lambda _: None)
+    monkeypatch.setattr(main, "get_cached_markdown", lambda _: None)
+    monkeypatch.setattr(main, "save_markdown_to_cache", lambda *_: None)
+    monkeypatch.setattr(main, "process_document", fake_process_document)
+    async def fake_generate(*args, **kwargs):
+        return plan
+
+    monkeypatch.setattr(main, "generate_study_plan", fake_generate)
+
+    client = TestClient(main.app)
+    with client.stream(
+        "POST",
+        "/api/process",
+        files=[
+            ("files", ("alpha.txt", b"aaa", "text/plain")),
+            ("files", ("beta.txt", b"bbb", "text/plain")),
+        ],
+    ) as response:
+        text = "".join(response.iter_text())
+
+    events = parse_sse_events(text)
+    result_events = [payload for event_type, payload in events if event_type == "result"]
+
+    assert len(result_events) == 1
+    assert result_events[0]["file_order"] == ["alpha.txt", "beta.txt"]
+
+
 def test_process_stream_emits_single_error_terminal_event(monkeypatch):
     async def fake_process_document(_file_path, _filename, on_progress=None):
         if on_progress:

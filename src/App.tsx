@@ -3,9 +3,11 @@ import { BookOpen, Loader2, Moon, Package, RotateCcw, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
 import { checkHealth, type StudyPlan, type Chapter } from './api/client';
-import { cn, countWords, sanitizeFilename } from './utils';
+import { cn, countWords, sanitizeFilename, stripMarkdownAndLatex } from './utils';
+import { buildBundles } from './utils/bundling';
 import type { HealthStatus, HealthSnapshot } from './types';
 import { useDocumentProcessor } from './hooks/useDocumentProcessor';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { ProgressBar } from './components/ProgressBar';
 import { UploadSection } from './components/UploadSection';
 import { ResultsSection } from './components/ResultsSection';
@@ -45,6 +47,12 @@ export default function App() {
   });
   const topicRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const didShowRestoredToastRef = useRef(false);
+  const [editedChapterIds, setEditedChapterIds] = useState<Set<string>>(new Set());
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
+  const [focusedChapterIdx, setFocusedChapterIdx] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const healthPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const errorToastIdRef = useRef<string | number | null>(null);
 
   // ── Topic order ──
   // Loaded from localStorage; validated against plan.topics so stale orders are discarded.
@@ -164,7 +172,9 @@ export default function App() {
     setFilterQuery('');
     setStudiedChapters(new Set());
     setTopicOrder([]);
+    setEditedChapterIds(new Set());
     topicRefs.current.clear();
+    document.title = 'StudyFlow AI';
     try { localStorage.removeItem('studyflow_plan'); } catch { /* storage unavailable */ }
     try { localStorage.removeItem('studyflow_progress'); } catch { /* storage unavailable */ }
     try { localStorage.removeItem('studyflow_topic_order'); } catch { /* storage unavailable */ }
@@ -173,11 +183,21 @@ export default function App() {
   const onSuccess = useCallback((result: StudyPlan) => {
     setPlan(result);
     setTopicOrder(result.topics);
+    setEditedChapterIds(new Set());
     try { localStorage.removeItem('studyflow_topic_order'); } catch { /* storage unavailable */ }
     setShowSetup(true);
     setShowMapPreview(false);
     setExpandedChapters(new Set());
     setFilterQuery('');
+  }, []);
+
+  const onEditChapter = useCallback((id: string, edits: { title: string; summary: string; content: string }) => {
+    setPlan(prev => {
+      if (!prev) return prev;
+      const chapters = prev.chapters.map(ch => ch.id === id ? { ...ch, ...edits } : ch);
+      return { ...prev, chapters };
+    });
+    setEditedChapterIds(prev => new Set([...prev, id]));
   }, []);
 
   const onBeforeGenerate = useCallback(async (): Promise<boolean> => {
@@ -221,6 +241,50 @@ export default function App() {
     files, loading, progressMessage, progressPercent, fileProgress, connectionError,
     onDrop, removeFile, reorderFiles, sortFiles, handleGenerate, handleCancel, resetFiles,
   } = useDocumentProcessor(onSuccess, onBeforeGenerate);
+
+  // ── Dynamic browser tab title ──
+  useEffect(() => {
+    if (loading) {
+      if (progressPercent > 0) {
+        document.title = `🔄 ${progressPercent}% Verwerken... — StudyFlow AI`;
+      } else {
+        document.title = '⏳ Documenten uploaden... — StudyFlow AI';
+      }
+      return;
+    }
+    if (connectionError) {
+      document.title = '❌ Fout opgetreden — StudyFlow AI';
+      return;
+    }
+    if (plan) {
+      document.title = '✅ Studieplan klaar! — StudyFlow AI';
+      const t = setTimeout(() => { document.title = 'StudyFlow AI'; }, 5000);
+      return () => clearTimeout(t);
+    }
+    document.title = 'StudyFlow AI';
+  }, [loading, progressPercent, connectionError, plan]);
+
+  // ── Health polling every 30 s (pause during active processing) ──
+  useEffect(() => {
+    healthPollingRef.current = setInterval(() => {
+      if (loading) return;
+      void refreshHealth(false).then(snapshot => {
+        if (snapshot.status === 'backend-offline' && healthStatus !== 'backend-offline') {
+          errorToastIdRef.current = toast.error(
+            'Backend niet meer bereikbaar. Herstart de FastAPI-server.',
+            { duration: Infinity },
+          );
+        } else if (snapshot.status !== 'backend-offline' && healthStatus === 'backend-offline') {
+          if (errorToastIdRef.current !== null) toast.dismiss(errorToastIdRef.current);
+          toast.success('Backend weer bereikbaar!', { duration: 3000 });
+          errorToastIdRef.current = null;
+        }
+      });
+    }, 30_000);
+    return () => {
+      if (healthPollingRef.current !== null) clearInterval(healthPollingRef.current);
+    };
+  }, [loading, healthStatus, refreshHealth]);
 
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -297,7 +361,24 @@ export default function App() {
         topicMap.set(ch.topic, existing);
       });
 
-      const zipFileCount = 2 + totalTopics;
+      const bundles = buildBundles(topicOrder);
+      const bundleCount = bundles.length;
+      const zipFileCount = 2 + bundleCount;
+
+      // Inject KB_ID and KB_SEC anchors into chapter content
+      const injectAnchors = (content: string, topicIdx: number, chapterIdx: number): string => {
+        let sectionIdx = 0;
+        return content
+          .split('\n')
+          .map(line => {
+            if (line.startsWith('### ')) {
+              sectionIdx++;
+              return `${line} (KB_SEC: T${topicIdx + 1}-C${chapterIdx + 1}-S${sectionIdx})`;
+            }
+            return line;
+          })
+          .join('\n');
+      };
 
       // ── 1. SYSTEM INSTRUCTIONS ──
       const systemInstructions = `# SYSTEM INSTRUCTIONS VOOR CUSTOM GPT
@@ -306,15 +387,21 @@ export default function App() {
 Je bent een gespecialiseerde academische AI Tutor. Je hebt toegang tot een complete Knowledge Base met ${totalChapters} hoofdstukken verdeeld over ${totalTopics} onderwerpen (${zipFileCount} bestanden totaal — geoptimaliseerd voor ChatGPT's 20-bestanden limiet).
 
 ## KERNPRINCIPES
-1. **ZERO HALLUCINATION**: Gebruik ALTIJD \`file_search\` om informatie op te zoeken. Geef NOOIT antwoorden gebaseerd op je eigen kennis als het gaat om cursusinhoud.
-2. **ACTIVE RECALL**: Stel de student vragen in plaats van direct antwoorden te geven. Gebruik de socratische methode.
-3. **PER ONDERWERP STUDEREN**: Volg de onderwerpstructuur. Rond een onderwerp af voordat je naar het volgende gaat.
-4. **BRONVERMELDING**: Vermeld ALTIJD uit welk onderwerp/hoofdstuk informatie komt (bijv. "Volgens [onderwerp], Hoofdstuk [nr]...").
+1. **EVIDENCE-FIRST**: Elk feitelijk antwoord MOET beginnen met \`Volgens [KB_ID: T#-C#]:\` of \`Zie (KB_SEC: T#-C#-S#):\`. Gebruik ALTIJD \`file_search\` om informatie op te zoeken voordat je antwoordt.
+2. **ZERO HALLUCINATION**: Als een onderwerp NIET in de Knowledge Base staat, antwoord dan exact: "Dit staat niet in het studiemateriaal." Geef NOOIT antwoorden gebaseerd op je eigen kennis voor cursusinhoud.
+3. **ACTIVE RECALL**: Stel de student vragen in plaats van direct antwoorden te geven. Gebruik de socratische methode.
+4. **PER ONDERWERP STUDEREN**: Volg de onderwerpstructuur. Rond een onderwerp af voordat je naar het volgende gaat.
 5. **VOLLEDIGHEID**: Neem ALLE stof door — sla niets over. Elke definitie, tabel, formule en oefening is belangrijk.
+
+## EXAMEN MODUS
+Wanneer de student een bericht stuurt dat begint met \`[EXAMEN]\`, genereer dan:
+1. Vijf open vragen over het gevraagde onderwerp
+2. Modelantwoorden voor elke vraag
+3. Elke vraag en elk antwoord citeren de exacte KB_SEC: bijv. "(KB_SEC: T2-C3-S1)"
 
 ## BESTANDSSTRUCTUUR (${zipFileCount} bestanden)
 - \`00_MASTER_INDEX.md\` — Complete cursuskaart en bestandsindex. Raadpleeg dit EERST.
-- \`Topic_01_*.md\` t/m \`Topic_${String(totalTopics).padStart(2, '0')}_*.md\` — Eén bestand per onderwerp, bevat ALLE bijbehorende hoofdstukken.
+- \`Topic_01_*.md\` t/m \`Topic_${String(bundleCount).padStart(2, '0')}_*.md\` — Eén bestand per onderwerp (of gebundelde onderwerpen), bevat ALLE bijbehorende hoofdstukken.
 
 ### Zoekstrategie
 1. Bij een nieuwe sessie: zoek \`00_MASTER_INDEX.md\` om de cursusstructuur te begrijpen.
@@ -325,10 +412,13 @@ Je bent een gespecialiseerde academische AI Tutor. Je hebt toegang tot een compl
 
 ### Interactie Protocol
 1. **Start**: Vraag de student waar hij/zij is gebleven of welk onderwerp ze willen behandelen.
-2. **Uitleg**: Zoek de relevante content op via file_search en leg uit MET verwijzing naar het hoofdstuk.
+2. **Uitleg**: Zoek de relevante content op via file_search en leg uit MET verwijzing: "Volgens [KB_ID: T#-C#]:".
 3. **Toets**: Gebruik de OEFENING-blokken om de student te toetsen na elke sectie.
 4. **Herhaling**: Als de student een concept niet begrijpt, zoek gerelateerde secties op.
 5. **Voortgang**: Houd bij welke hoofdstukken de student heeft afgerond en welke nog komen.
+
+### Taal
+Antwoord altijd in de taal waarin de student schrijft.
 
 ## STUDIEPLAN OVERZICHT
 ${plan.masterStudyMap}
@@ -350,61 +440,96 @@ ${plan.gptSystemInstructions}
 `;
       topicOrder.forEach((topicName, topicIdx) => {
         const chapters = topicMap.get(topicName) ?? [];
-        const safeTopicName = sanitizeFilename(topicName);
-        const topicFileName = `Topic_${String(topicIdx + 1).padStart(2, '0')}_${safeTopicName}.md`;
+        const bundleIdx = bundles.findIndex(b => b.topics.includes(topicName));
+        const safeLabel = sanitizeFilename(bundles[bundleIdx]?.label ?? topicName);
+        const topicFileName = `${safeLabel}.md`;
         indexContent += `### ${String(topicIdx + 1).padStart(2, '0')}. ${topicName}\n`;
         indexContent += `**Bestand:** \`${topicFileName}\` | **Hoofdstukken:** ${chapters.length}\n\n`;
-        chapters.forEach(ch => {
-          indexContent += `- **${ch.id}** — ${ch.title}\n`;
+        chapters.forEach((ch, chIdx) => {
+          indexContent += `- **${ch.id}** [KB_ID: T${topicIdx + 1}-C${chIdx + 1}] — ${ch.title}\n`;
           indexContent += `  *${ch.summary}*\n`;
         });
         indexContent += `\n`;
       });
 
       indexContent += `---\n\n## Master Study Map\n\n${plan.masterStudyMap}\n\n`;
-      indexContent += `---\n\n## Bestandsindex\n\n`;
-      indexContent += `| # | Bestand | Onderwerpen | Hoofdstukken |\n`;
-      indexContent += `|---|---------|-------------|---------------|\n`;
+      indexContent += `---\n\n## Dekkingsstatus\n\n`;
+      indexContent += `| Onderwerp | Hoofdstukken | Status |\n`;
+      indexContent += `|-----------|-------------|--------|\n`;
+      topicOrder.forEach(topicName => {
+        const chapters = topicMap.get(topicName) ?? [];
+        indexContent += `| ${topicName} | ${chapters.length} | ✅ Volledig |\n`;
+      });
+
+      indexContent += `\n---\n\n## Aliassen\n\n`;
       topicOrder.forEach((topicName, topicIdx) => {
         const chapters = topicMap.get(topicName) ?? [];
-        const safeTopicName = sanitizeFilename(topicName);
-        const topicFileName = `Topic_${String(topicIdx + 1).padStart(2, '0')}_${safeTopicName}.md`;
-        indexContent += `| ${topicIdx + 1} | \`${topicFileName}\` | ${topicName} | ${chapters.map(c => c.id).join(', ')} |\n`;
+        chapters.forEach((ch, chIdx) => {
+          indexContent += `- ${ch.title} → T${topicIdx + 1}-C${chIdx + 1}\n`;
+        });
+      });
+
+      indexContent += `\n---\n\n## Examenblueprint\n\n`;
+      indexContent += `| Onderwerp | Hoofdstukken |\n`;
+      indexContent += `|-----------|-------------|\n`;
+      topicOrder.forEach(topicName => {
+        const chapters = topicMap.get(topicName) ?? [];
+        indexContent += `| ${topicName} | ${chapters.length} hoofdstuk${chapters.length !== 1 ? 'ken' : ''} |\n`;
+      });
+
+      indexContent += `\n---\n\n## Bestandsindex\n\n`;
+      indexContent += `| # | Bestand | Onderwerpen | Hoofdstukken |\n`;
+      indexContent += `|---|---------|-------------|---------------|\n`;
+      bundles.forEach((bundle, bundleIdx) => {
+        const allChapters = bundle.topics.flatMap(t => topicMap.get(t) ?? []);
+        const safeLabel = sanitizeFilename(bundle.label);
+        indexContent += `| ${bundleIdx + 1} | \`${safeLabel}.md\` | ${bundle.topics.join(', ')} | ${allChapters.map(c => c.id).join(', ')} |\n`;
       });
 
       zip.file("00_MASTER_INDEX.md", indexContent);
 
-      // ── 3. PER-TOPIC BESTANDEN ──
-      topicOrder.forEach((topicName, topicIdx) => {
-        const chapters = topicMap.get(topicName) ?? [];
-        const safeTopicName = sanitizeFilename(topicName);
-        const topicFileName = `Topic_${String(topicIdx + 1).padStart(2, '0')}_${safeTopicName}.md`;
+      // ── 3. PER-BUNDLE BESTANDEN ──
+      bundles.forEach((bundle, bundleIdx) => {
+        const bundleTopics = bundle.topics;
+        const allBundleChapters = bundleTopics.flatMap(t => topicMap.get(t) ?? []);
+        const safeLabel = sanitizeFilename(bundle.label);
+        const topicFileName = `${safeLabel}.md`;
 
         let topicContent = `---
-topic: "${topicName}"
-topic_index: ${topicIdx + 1}
-total_topics: ${totalTopics}
-chapters: [${chapters.map(c => `"${c.id}"`).join(', ')}]
-chapter_count: ${chapters.length}
+topics: [${bundleTopics.map(t => `"${t}"`).join(', ')}]
+bundle_index: ${bundleIdx + 1}
+total_bundles: ${bundleCount}
+chapters: [${allBundleChapters.map(c => `"${c.id}"`).join(', ')}]
+chapter_count: ${allBundleChapters.length}
 document_type: "course_material"
 ---
 
-# Onderwerp ${topicIdx + 1}: ${topicName}
-**${chapters.length} hoofdstuk${chapters.length !== 1 ? 'ken' : ''}** | Knowledge Base bestand ${topicIdx + 1} van ${totalTopics}
+# ${bundleTopics.length === 1 ? `Onderwerp ${bundleIdx + 1}: ${bundleTopics[0]}` : `Onderwerpen ${bundleIdx + 1}: ${bundleTopics.join(', ')}`}
+**${allBundleChapters.length} hoofdstuk${allBundleChapters.length !== 1 ? 'ken' : ''}** | Knowledge Base bestand ${bundleIdx + 1} van ${bundleCount}
 
 ## Inhoudsopgave
-${chapters.map((ch, i) => `${i + 1}. [${ch.id}: ${ch.title}](#${ch.id.toLowerCase().replace(/[^a-z0-9]/g, '-')})`).join('\n')}
+${allBundleChapters.map((ch, i) => `${i + 1}. [${ch.id}: ${ch.title}](#${ch.id.toLowerCase().replace(/[^a-z0-9]/g, '-')})`).join('\n')}
 
 ---
 
 `;
 
-        chapters.forEach((chapter, chIdx) => {
-          const globalIdx = plan.chapters.indexOf(chapter);
-          const prevChapter = globalIdx > 0 ? plan.chapters[globalIdx - 1] : null;
-          const nextChapter = globalIdx < plan.chapters.length - 1 ? plan.chapters[globalIdx + 1] : null;
+        bundleTopics.forEach((topicName) => {
+          const topicIdx = topicOrder.indexOf(topicName);
+          const chapters = topicMap.get(topicName) ?? [];
 
-          topicContent += `## ${chapter.id}: ${chapter.title}
+          if (bundleTopics.length > 1) {
+            topicContent += `# Onderwerp: ${topicName}\n\n`;
+          }
+
+          chapters.forEach((chapter, chIdx) => {
+            const globalIdx = plan.chapters.indexOf(chapter);
+            const prevChapter = globalIdx > 0 ? plan.chapters[globalIdx - 1] : null;
+            const nextChapter = globalIdx < plan.chapters.length - 1 ? plan.chapters[globalIdx + 1] : null;
+            const anchoredContent = injectAnchors(chapter.content, topicIdx, chIdx);
+
+            topicContent += `## ${chapter.id}: ${chapter.title}
+KB_ID: T${topicIdx + 1}-C${chIdx + 1}
 
 > **Navigatie**
 > ${prevChapter ? `Vorig: ${prevChapter.id} — ${prevChapter.title}` : 'Eerste hoofdstuk'}
@@ -414,17 +539,18 @@ ${chapters.map((ch, i) => `${i + 1}. [${ch.id}: ${ch.title}](#${ch.id.toLowerCas
 
 ### Volledige Lesstof
 
-${chapter.content}
+${anchoredContent}
 
 ### Tutor Instructies
 - Toets de student op alle concepten en oefeningen in dit hoofdstuk.
 ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextChapter.title}**.` : '- Dit is het laatste hoofdstuk. Maak een eindtoets van alle behandelde stof.'}
-- Verwijs bij vragen naar dit hoofdstuk: "${chapter.id}: ${chapter.title}".
+- Verwijs bij vragen naar dit hoofdstuk: "${chapter.id}: ${chapter.title}" [KB_ID: T${topicIdx + 1}-C${chIdx + 1}].
 
 `;
-          if (chIdx < chapters.length - 1) {
-            topicContent += `---\n\n`;
-          }
+            if (chIdx < chapters.length - 1) {
+              topicContent += `---\n\n`;
+            }
+          });
         });
 
         zip.file(topicFileName, topicContent);
@@ -471,7 +597,7 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
       title:   ch.title.toLowerCase(),
       topic:   ch.topic.toLowerCase(),
       summary: ch.summary.toLowerCase(),
-      content: ch.content.toLowerCase(),
+      content: stripMarkdownAndLatex(ch.content).toLowerCase(),
     })) ?? [],
     [plan],
   );
@@ -491,9 +617,22 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
   );
 
   const zipFileCount = useMemo(
-    () => (plan ? 2 + topicOrder.length : 0),
+    () => (plan ? 2 + Math.min(topicOrder.length, 18) : 0),
     [plan, topicOrder],
   );
+
+  // ── Keyboard shortcuts (declared after filteredChapters to avoid TDZ) ──
+  useKeyboardShortcuts({
+    planLoaded: plan !== null,
+    onFocusSearch: () => searchInputRef.current?.focus(),
+    onClearSearch: () => setFilterQuery(''),
+    onExpandAll: () => setExpandedChapters(new Set(filteredChapters.map(c => c.id))),
+    onCollapseAll: () => setExpandedChapters(new Set()),
+    onDownloadZip: downloadOptimizedRagZip,
+    onNextChapter: () => setFocusedChapterIdx(i => Math.min(i + 1, (plan?.chapters.length ?? 1) - 1)),
+    onPrevChapter: () => setFocusedChapterIdx(i => Math.max(i - 1, 0)),
+    onShowHelp: () => setShowShortcutsHelp(prev => !prev),
+  });
 
   // ── RENDER ──
 
@@ -607,12 +746,64 @@ ${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextCh
               promptTemplate,
               onSetPromptTemplate,
               onResetPromptTemplate,
+              editedChapterIds,
+              onEditChapter,
+              searchInputRef,
             } satisfies ResultsContextValue}>
               <ResultsSection />
             </ResultsContext.Provider>
           )}
         </AnimatePresence>
       </main>
+
+      {/* Keyboard shortcuts overlay */}
+      <AnimatePresence>
+        {showShortcutsHelp && (
+          <motion.div
+            key="shortcuts-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowShortcutsHelp(false)}
+            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-6"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200 dark:border-gray-700"
+            >
+              <h2 className="font-extrabold text-lg mb-4 text-gray-900 dark:text-gray-100">Sneltoetsen</h2>
+              <table className="w-full text-sm">
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {[
+                    ['Ctrl/⌘ + F', 'Focus zoekbalk'],
+                    ['Escape', 'Zoekfilter wissen'],
+                    ['Ctrl/⌘ + E', 'Alles uitklappen'],
+                    ['Ctrl/⌘ + Shift + E', 'Alles inklappen'],
+                    ['Ctrl/⌘ + D', 'Download RAG ZIP'],
+                    ['J', 'Volgend hoofdstuk'],
+                    ['K', 'Vorig hoofdstuk'],
+                    ['?', 'Sneltoetsen tonen/verbergen'],
+                  ].map(([key, desc]) => (
+                    <tr key={key}>
+                      <td className="py-1.5 pr-4 font-mono text-xs text-orange-600 dark:text-orange-400 whitespace-nowrap">{key}</td>
+                      <td className="py-1.5 text-gray-600 dark:text-gray-300">{desc}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button
+                onClick={() => setShowShortcutsHelp(false)}
+                className="mt-4 w-full text-sm font-bold bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 py-2 rounded-xl transition-colors"
+              >
+                Sluiten
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <style dangerouslySetInnerHTML={{__html: `
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
