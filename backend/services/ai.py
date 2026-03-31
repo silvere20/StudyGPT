@@ -36,11 +36,14 @@ Transform the provided document content into a perfectly structured "Master Stud
 
 ## TWO DISTINCT LAYERS — READ CAREFULLY
 
-### SOURCE LAYER: the `content` field — ZERO DATA LOSS (PRIORITEIT #1)
+### SOURCE LAYER: the `content` field — ZERO DATA LOSS (PRIORITEIT #1 — ABSOLUTE VEREISTE)
 - The `content` field is a verbatim reproduction of the source material with navigation structure added.
-- PRESERVE ALL content exactly. Every table, formula, exercise, definition, example, and paragraph MUST appear in your `content` output.
-- NEVER summarize, shorten, or paraphrase inside `content`. You may add Markdown headers and markers (OEFENING:, DEFINITIE:) for navigation but must not remove anything.
-- If content seems incomplete or cut off, add inside `content`: "[WAARSCHUWING: Document content lijkt hier onvolledig]"
+- PRESERVE ALL content exactly as-is. Every table, formula, exercise, definition, example, code block, footnote, and paragraph MUST appear in your `content` output — word for word.
+- NEVER summarize, paraphrase, shorten, omit, or rewrite ANY part of the source inside `content`. This is non-negotiable.
+- You ONLY add Markdown structural markers (##, ###, OEFENING:, DEFINITIE:, Kernbegrippen) — you NEVER remove or alter existing text.
+- If the source has a table → reproduce the full table. If it has a formula → reproduce the full formula. If it has an exercise with multiple sub-questions → reproduce ALL sub-questions and answers.
+- If content seems incomplete or cut off, add inside `content`: "[WAARSCHUWING: Document content lijkt hier onvolledig — controleer het bronbestand]"
+- CONTENT INTEGRITY CHECK: Before finalizing each chapter, verify: (a) no sentences were dropped, (b) no tables were shortened, (c) no exercises were omitted.
 
 ### TEACHER LAYER: the `summary` field — AI SYNTHESIS
 - The `summary` field is a short AI-generated synthesis. It is explicitly NOT the source text.
@@ -408,7 +411,7 @@ async def _call_json_completion(*, system_prompt: str, user_content: str) -> dic
                     {"role": "user", "content": user_content},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.1,
+                temperature=0.02,
             )
 
             text = response.choices[0].message.content
