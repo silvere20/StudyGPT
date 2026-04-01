@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { checkHealth, processDocuments } from './api/client';
 
@@ -39,6 +39,15 @@ const mockedCheckHealth = vi.mocked(checkHealth);
 const mockedProcessDocuments = vi.mocked(processDocuments);
 
 describe('App', () => {
+  beforeEach(() => {
+    window.localStorage?.removeItem?.('studyflow_plan');
+    window.localStorage?.removeItem?.('studyflow_progress');
+    window.localStorage?.removeItem?.('studyflow_topic_order');
+    window.localStorage?.removeItem?.('studyflow_prompt_template');
+    mockedCheckHealth.mockReset();
+    mockedProcessDocuments.mockReset();
+  });
+
   it('renders a healthy status and shows generated results after processing', async () => {
     mockedCheckHealth.mockResolvedValue({
       status: 'ok',
@@ -85,6 +94,54 @@ describe('App', () => {
 
     expect(await screen.findByText('Jouw Studie Architectuur')).toBeTruthy();
     expect(await screen.findAllByText('Introductie')).toHaveLength(2);
+  });
+
+  it('uses the chapter-only prompt template without exposing the old topic variable', async () => {
+    mockedCheckHealth.mockResolvedValue({
+      status: 'ok',
+      openai_configured: true,
+      ocr_available: true,
+      ocr_missing_langs: [],
+    });
+
+    mockedProcessDocuments.mockImplementation(async (_files, onProgress, onResult) => {
+      onProgress({ step: 'document', progress: 100, message: 'Klaar' });
+      onResult({
+        chapters: [
+          {
+            id: 'T1-C1',
+            title: 'Introductie',
+            summary: 'Samenvatting',
+            topic: 'Algemeen',
+            content: 'Lesstof',
+          },
+        ],
+        topics: ['Algemeen'],
+        masterStudyMap: '| onderwerp | chapter |',
+        gptSystemInstructions: 'Use the KB.',
+      });
+    });
+
+    const { container } = render(<App />);
+
+    await screen.findByText('Verwerkingsstack beschikbaar');
+
+    const input = container.querySelector('input[type="file"]');
+    fireEvent.change(input!, {
+      target: {
+        files: [new File(['hello'], 'notes.txt', { type: 'text/plain' })],
+      },
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Genereer Studieplan/i }));
+
+    await screen.findByText('Prompt Template');
+
+    expect(screen.queryByText('{topic}')).toBeNull();
+
+    const promptTextarea = container.querySelector('textarea');
+    expect(promptTextarea?.value).toContain('Hier is de content voor {title}');
+    expect(promptTextarea?.value).not.toContain('{topic}');
   });
 
   it('shows a visible warning when the backend is up but the API key is missing', async () => {

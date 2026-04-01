@@ -4,7 +4,7 @@ import { cn } from '../utils';
 import { LazyMarkdown } from './LazyMarkdown';
 import { useResultsContext } from '../context/ResultsContext';
 
-const TEMPLATE_VARS = ['{topic}', '{title}', '{summary}', '{content}'] as const;
+const TEMPLATE_VARS = ['{title}', '{summary}', '{content}'] as const;
 
 export function SetupPanel() {
   const {

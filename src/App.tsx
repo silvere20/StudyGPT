@@ -16,8 +16,11 @@ import { CourseDashboard } from './components/CourseDashboard';
 import { ResultsContext } from './context/ResultsContext';
 import type { ResultsContextValue } from './context/ResultsContext';
 
-const DEFAULT_PROMPT_TEMPLATE =
+const LEGACY_DEFAULT_PROMPT_TEMPLATE =
   'Hier is de content voor {topic}: {title}\n\nSamenvatting: {summary}\n\nContent:\n{content}\n\nGebruik de Master Study Map om te zien waar we zijn. Laten we dit hoofdstuk interactief doornemen. Test me op de stof en eventuele opdrachten.';
+
+const DEFAULT_PROMPT_TEMPLATE =
+  'Hier is de content voor {title}\n\nSamenvatting: {summary}\n\nContent:\n{content}\n\nGebruik de Master Study Map om te zien waar we zijn. Laten we dit hoofdstuk interactief doornemen. Test me op de stof en eventuele opdrachten.';
 
 // ── Migratie: oud formaat (studyflow_plan) → één Course ──
 function migrateOldData(createCourse: (name: string) => { id: string }): void {
@@ -101,7 +104,6 @@ export default function App() {
   const [filterQuery, setFilterQuery] = useState('');
   const [zipGenerating, setZipGenerating] = useState(false);
   const [exportPlatform, setExportPlatform] = useState<'chatgpt' | 'gemini' | 'claude' | null>(null);
-
   const topicRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const didShowRestoredToastRef = useRef(false);
   // Ref to current files so onSuccess (declared before useDocumentProcessor) can access them
@@ -136,7 +138,9 @@ export default function App() {
 
   const [promptTemplate, setPromptTemplate] = useState<string>(() => {
     try {
-      return localStorage.getItem('studyflow_prompt_template') ?? DEFAULT_PROMPT_TEMPLATE;
+      const saved = localStorage.getItem('studyflow_prompt_template');
+      if (!saved || saved === LEGACY_DEFAULT_PROMPT_TEMPLATE) return DEFAULT_PROMPT_TEMPLATE;
+      return saved;
     } catch { return DEFAULT_PROMPT_TEMPLATE; }
   });
 
@@ -162,7 +166,7 @@ export default function App() {
       const health = await checkHealth();
       if (health.status === 'ok' && health.openai_configured) {
         if (!health.ocr_available) {
-          const snapshot = { status: 'warning' as const, message: 'Backend draait, maar Tesseract-taaldata ontbreekt. OCR werkt mogelijk niet correct.' };
+          const snapshot = { status: 'warning' as const, message: 'Backend draait, maar Nederlandse/Engelse Tesseract-taaldata ontbreekt. OCR werkt mogelijk niet correct.' };
           applyHealthSnapshot(snapshot);
           return snapshot;
         }
@@ -328,7 +332,7 @@ export default function App() {
     if (!plan) return;
     let content = '';
     orderedChapters(plan).forEach((chapter, i) => {
-      content += `--- PROMPT ${i + 1}: ${chapter.topic} - ${chapter.title} ---\n\n${formatPrompt(chapter)}\n\n`;
+      content += `--- PROMPT ${i + 1}: ${chapter.title} ---\n\n${formatPrompt(chapter)}\n\n`;
     });
     copyToClipboard(content, 'copy-all');
   };
@@ -338,7 +342,7 @@ export default function App() {
     const courseName = activeCourse?.name ?? 'Cursus';
     let content = `# ${courseName}\n\n## Master Study Map\n\n${plan.masterStudyMap}\n\n---\n\n## GPT System Instructions\n\n${plan.gptSystemInstructions}\n\n---\n\n`;
     orderedChapters(plan).forEach((chapter, i) => {
-      content += `## Prompt ${i + 1}: ${chapter.topic} - ${chapter.title}\n\n${formatPrompt(chapter)}\n\n---\n\n`;
+      content += `## Prompt ${i + 1}: ${chapter.title}\n\n${formatPrompt(chapter)}\n\n---\n\n`;
     });
     const blob = new Blob([content], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);

@@ -17,8 +17,17 @@ OCR_DPI = 300
 MAX_OCR_TILE_WIDTH = 4_500
 MAX_OCR_TILE_HEIGHT = 4_500
 MAX_OCR_TILE_PIXELS = 18_000_000
+REQUIRED_OCR_LANGUAGES = ("eng", "nld")
+TESSERACT_LANGUAGE_SPEC = "+".join(REQUIRED_OCR_LANGUAGES)
 
-_ocr_executor = ProcessPoolExecutor(max_workers=4)
+_ocr_executor: ProcessPoolExecutor | None = None
+
+
+def _get_ocr_executor() -> ProcessPoolExecutor:
+    global _ocr_executor
+    if _ocr_executor is None:
+        _ocr_executor = ProcessPoolExecutor(max_workers=4)
+    return _ocr_executor
 
 
 def check_tesseract_languages() -> dict:
@@ -26,7 +35,7 @@ def check_tesseract_languages() -> dict:
     Check if Tesseract is installed and if required language packs are available.
     Returns a dict with keys: available (bool), languages (list[str]), missing (list[str]).
     """
-    required = ["eng", "nld"]
+    required = list(REQUIRED_OCR_LANGUAGES)
     try:
         result = subprocess.run(
             ["tesseract", "--list-langs"],
@@ -162,7 +171,7 @@ def _ocr_page_worker(args: tuple) -> tuple[int, str]:
             tmp_path = tmp.name
         try:
             result = _subprocess.run(
-                ["tesseract", tmp_path, "stdout", "-l", "eng+nld", "--psm", "6"],
+                ["tesseract", tmp_path, "stdout", "-l", TESSERACT_LANGUAGE_SPEC, "--psm", "6"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -236,7 +245,7 @@ async def ocr_pdf(file_path: str, on_progress=None) -> str:
     ]
 
     futures = [
-        loop.run_in_executor(_ocr_executor, _ocr_page_worker, args)
+        loop.run_in_executor(_get_ocr_executor(), _ocr_page_worker, args)
         for args in args_list
     ]
 
@@ -300,7 +309,7 @@ async def _run_tesseract_on_image(image: Image.Image) -> str:
                 tmp_path,
                 "stdout",
                 "-l",
-                "eng+nld",
+                TESSERACT_LANGUAGE_SPEC,
                 "--psm",
                 "6",
             ],

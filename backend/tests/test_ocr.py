@@ -15,6 +15,7 @@ from services.ocr import (
     MAX_OCR_TILE_PIXELS,
     MAX_OCR_TILE_WIDTH,
     _build_tile_boxes,
+    check_tesseract_languages,
     is_scanned_pdf,
     ocr_image,
     ocr_pdf,
@@ -62,6 +63,26 @@ def test_ocr_image_returns_tesseract_stdout(monkeypatch, tmp_path: Path):
     )
 
     assert asyncio.run(ocr_image(str(image_path))) == "OCR TEST\nLineaire regressie"
+
+
+def test_check_tesseract_languages_only_requires_english_and_dutch(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="eng\nnld\n",
+            stderr="List of available languages in \"/opt/homebrew/share/tessdata/\" (2):\n",
+        ),
+    )
+
+    status = check_tesseract_languages()
+
+    assert status["available"] is True
+    assert status["missing"] == []
+    assert "eng" in status["languages"]
+    assert "nld" in status["languages"]
 
 
 def test_ocr_pdf_respects_page_order(monkeypatch, tmp_path: Path):
