@@ -149,6 +149,20 @@ class StatusDot(tk.Canvas):
 
 # ── Main App ──
 
+def _load_window_icon(root: tk.Tk):
+    """Zet het app-icoon als tkinter window icon (indien beschikbaar)."""
+    icon_path = os.path.join(BASE_DIR, "icon_512.png")
+    if not os.path.exists(icon_path):
+        return
+    try:
+        img = tk.PhotoImage(file=icon_path)
+        root.iconphoto(True, img)
+        # Bewaar referentie zodat garbage collector het niet opruimt
+        root._icon_ref = img  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
 class LauncherApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -156,6 +170,7 @@ class LauncherApp:
         self.root.title("StudyFlow AI")
         self.root.resizable(False, False)
         self.root.configure(bg=C_BG)
+        _load_window_icon(self.root)
 
         W, H = 400, 460
         self.root.update_idletasks()
