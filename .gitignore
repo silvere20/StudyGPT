@@ -9,9 +9,13 @@ coverage/
 !.env.example
 !backend/.env.example
 
+# Local tooling
+.claude/
+.claire/
+
 # Python
 backend/__pycache__/
 backend/.venv/
-backend/cache/*.json
+backend/cache/
 __pycache__/
 *.pyc
