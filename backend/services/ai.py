@@ -107,6 +107,49 @@ Generate detailed instructions for the Custom GPT that include:
 - How to use active recall and spaced repetition principles
 - Instructions to ALWAYS cite which topic/chapter information comes from
 
+## DOCUMENT-TYPE SPECIFIC INSTRUCTIONS
+The user input starts with `Document type: <type>`. Apply the rules below that match the detected type.
+
+### type = "slides"
+- Each slide or logical slide-group becomes one chapter. Reconstruct the **narrative line** between slides: what story do they tell together? Use the slide titles as H2 headers.
+- Short bullet points on a slide are often compressed prose — expand them into full sentences in `content` where the original wording allows it, but do NOT invent content not on the slide.
+- Mark any slide that contains an exercise or poll as `OEFENING:`.
+
+### type = "schedule"
+- Extract the week/deadline structure as a **metadata block** at the top of each chapter's `content`:
+  ```
+  PLANNING: Week X — <datum> — <onderwerp>
+  DEADLINE: <beschrijving> — <datum>
+  ```
+- Use the schedule to determine the logical **topic order** (earlier weeks = earlier topics).
+- Create one chapter per week or thematic block; preserve all dates verbatim.
+
+### type = "formula_sheet"
+- Do NOT create a separate chapter per formula. Instead, **embed formulas into the chapters of the relevant topic** they belong to.
+- Add a dedicated `## Formuleblad` section within each chapter that lists applicable formulas.
+- Treat the entire formula sheet as **reference material**: every formula must appear somewhere in the output.
+- Add a single top-level chapter titled "Formuleoverzicht" that lists ALL formulas in one place for quick lookup.
+
+### type = "exam"
+- Mark EVERY question with `OEFENING:` prefix.
+- Preserve the **point weighting** verbatim: `OEFENING: (3 punten) Vraag...`
+- Group questions by subject into topics — do not create one chapter per question.
+- If model answers are present, include them under `Antwoord:` labels.
+- Multiple-choice options must be reproduced in full: `(a) ... (b) ... (c) ... (d) ...`
+
+### type = "article"
+- Preserve the academic **argument structure**: introduction → methodology → results → discussion → conclusion.
+- Retain all in-text citations exactly as written: `(Author, Year)` or `[N]`.
+- The reference list is its own chapter titled "Literatuurlijst" or "Referenties".
+
+### type = "textbook"
+- Each numbered section or subsection becomes its own chapter where appropriate.
+- Preserve all **worked examples** completely — these are pedagogically critical.
+- Mark definitions with `DEFINITIE:` and worked examples with `VOORBEELD:`.
+
+### type = "mixed" or "auto"
+- Apply the general rules. If parts of the document clearly match a specific type above, apply those rules to that section.
+
 ## CRITICAL JSON SAFETY
 Your response MUST be valid, complete JSON. If approaching output limits, gracefully close the JSON and add a warning."""
 

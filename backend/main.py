@@ -21,7 +21,7 @@ from services.cache import (
     save_markdown_to_cache,
     save_to_cache,
 )
-from services.document import process_document
+from services.document import detect_document_type, process_document
 from services.ocr import check_tesseract_languages
 
 load_dotenv()
@@ -205,6 +205,12 @@ async def process_files(files: list[UploadFile] = File(...)):
 
             # Combine all documents and generate study plan
             combined_content = "\n\n---\n\n".join(all_markdown)
+
+            # Detect document type from combined content + first filename
+            first_filename = files[0].filename or "document" if files else "document"
+            doc_type = detect_document_type(combined_content, first_filename)
+            logger.info("Detected document type: %s (file: %s)", doc_type, first_filename)
+
             ai_progress_queue: asyncio.Queue[str] = asyncio.Queue()
             ai_on_progress = _build_progress_callback(ai_progress_queue)
 
@@ -213,13 +219,14 @@ async def process_files(files: list[UploadFile] = File(...)):
                 {
                     "step": "ai",
                     "progress": 0,
-                    "message": "Studieplan genereren met GPT-4.1...",
+                    "message": f"Studieplan genereren met GPT-4.1 (type: {doc_type})...",
                 },
             )
 
             ai_task = asyncio.create_task(
                 generate_study_plan(
                     combined_content,
+                    doc_type=doc_type,
                     on_progress=ai_on_progress,
                 )
             )
@@ -304,7 +311,9 @@ async def process_files_simple(files: list[UploadFile] = File(...)):
                 Path(tmp_path).unlink(missing_ok=True)
 
         combined = "\n\n---\n\n".join(all_markdown)
-        plan = await generate_study_plan(combined)
+        first_fn = files[0].filename or "document" if files else "document"
+        doc_type = detect_document_type(combined, first_fn)
+        plan = await generate_study_plan(combined, doc_type=doc_type)
 
         if use_cache and cached_file_hash:
             save_to_cache(cached_file_hash, plan)
