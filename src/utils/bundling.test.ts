@@ -1,48 +1,116 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import type { Chapter } from '../api/client';
 import { buildBundles } from './bundling';
 
-function topics(n: number): string[] {
-  return Array.from({ length: n }, (_, i) => `Topic${i + 1}`);
+function makeWords(count: number): string {
+  return Array.from({ length: count }, (_, index) => `woord${index + 1}`).join(' ');
+}
+
+function makeContent(paragraphWordCounts: number[]): string {
+  return paragraphWordCounts
+    .map((count, index) => `## Paragraaf ${index + 1}\n${makeWords(count)}`)
+    .join('\n\n');
+}
+
+function makeChapter(
+  id: string,
+  topic: string,
+  paragraphWordCounts: number[],
+  overrides: Partial<Chapter> = {},
+): Chapter {
+  return {
+    id,
+    title: overrides.title ?? `${topic} ${id}`,
+    summary: overrides.summary ?? `${topic} samenvatting voor ${id}`,
+    topic,
+    content: overrides.content ?? makeContent(paragraphWordCounts),
+    key_concepts: overrides.key_concepts ?? [`kern-${id}`],
+    related_sections: overrides.related_sections ?? [],
+  };
 }
 
 describe('buildBundles', () => {
-  it('5 topics → 5 bundles (1:1)', () => {
-    const bundles = buildBundles(topics(5));
-    expect(bundles).toHaveLength(5);
-    bundles.forEach((b, i) => {
-      expect(b.topics).toEqual([`Topic${i + 1}`]);
-    });
+  it('houdt hoofdstukken onder de limiet 1-op-1', () => {
+    const bundles = buildBundles([
+      makeChapter('T1-C1', 'Calculus', [1200]),
+      makeChapter('T1-C2', 'Algebra', [1500]),
+      makeChapter('T1-C3', 'Statistiek', [1700]),
+    ]);
+
+    expect(bundles).toHaveLength(3);
+    expect(bundles.map((bundle) => bundle.chapterIds)).toEqual([
+      ['T1-C1'],
+      ['T1-C2'],
+      ['T1-C3'],
+    ]);
   });
 
-  it('18 topics → 18 bundles (1:1)', () => {
-    const bundles = buildBundles(topics(18));
-    expect(bundles).toHaveLength(18);
-    bundles.forEach(b => expect(b.topics).toHaveLength(1));
+  it('splitst een hoofdstuk boven 8000 woorden in meerdere delen', () => {
+    const bundles = buildBundles([
+      makeChapter('T1-C1', 'Calculus', [4500, 4500]),
+    ]);
+
+    expect(bundles).toHaveLength(2);
+    expect(bundles[0].items[0].title).toContain('Deel 1');
+    expect(bundles[1].items[0].title).toContain('Deel 2');
+    expect(bundles[0].chapterIds).toEqual(['T1-C1']);
+    expect(bundles[1].chapterIds).toEqual(['T1-C1']);
   });
 
-  it('19 topics → 18 bundles (last two merged)', () => {
-    const bundles = buildBundles(topics(19));
-    expect(bundles).toHaveLength(18);
-    expect(bundles[17].topics).toEqual(['Topic18', 'Topic19']);
+  it('merge kleine hoofdstukken tot minder bundles wanneer dat past', () => {
+    const bundles = buildBundles(
+      [
+        makeChapter('T1-C1', 'Calculus', [1000]),
+        makeChapter('T1-C2', 'Calculus', [1000]),
+        makeChapter('T1-C3', 'Calculus', [1000]),
+      ],
+      2,
+      8000,
+    );
+
+    expect(bundles).toHaveLength(2);
+    expect(bundles[0].chapterIds).toEqual(['T1-C1', 'T1-C2']);
+    expect(bundles[1].chapterIds).toEqual(['T1-C3']);
   });
 
-  it('30 topics → 18 bundles (topics 18–30 merged)', () => {
-    const bundles = buildBundles(topics(30));
-    expect(bundles).toHaveLength(18);
-    expect(bundles[17].topics).toHaveLength(13); // topics 18..30
-    expect(bundles[17].topics[0]).toBe('Topic18');
-    expect(bundles[17].topics[12]).toBe('Topic30');
+  it('laat same-topic merges winnen van cross-topic merges', () => {
+    const bundles = buildBundles(
+      [
+        makeChapter('T1-C1', 'Algebra', [2000]),
+        makeChapter('T1-C2', 'Algebra', [2000]),
+        makeChapter('T2-C1', 'Statistiek', [2000]),
+        makeChapter('T3-C1', 'Mechanica', [2000]),
+      ],
+      2,
+      8000,
+    );
+
+    expect(bundles).toHaveLength(2);
+    expect(bundles[0].chapterIds).toEqual(['T1-C1', 'T1-C2']);
+    expect(bundles[1].chapterIds).toEqual(['T2-C1', 'T3-C1']);
   });
 
-  it('each bundle label is a non-empty string', () => {
-    const bundles = buildBundles(topics(20));
-    bundles.forEach(b => expect(b.label.length).toBeGreaterThan(0));
+  it('laat geen bundle boven de woordlimiet uitkomen', () => {
+    const bundles = buildBundles(
+      Array.from({ length: 20 }, (_, index) =>
+        makeChapter(`T1-C${index + 1}`, 'Calculus', [1000]),
+      ),
+      2,
+      8000,
+    );
+
+    expect(bundles.every((bundle) => bundle.totalWords <= 8000)).toBe(true);
   });
 
-  it('total topics across all bundles equals input length', () => {
-    const input = topics(25);
-    const bundles = buildBundles(input);
-    const total = bundles.reduce((sum, b) => sum + b.topics.length, 0);
-    expect(total).toBe(25);
+  it('blijft boven 18 bundles als verdere merges de woordlimiet zouden breken', () => {
+    const bundles = buildBundles(
+      Array.from({ length: 19 }, (_, index) =>
+        makeChapter(`T1-C${index + 1}`, `Topic${index + 1}`, [5000]),
+      ),
+      18,
+      8000,
+    );
+
+    expect(bundles).toHaveLength(19);
   });
 });

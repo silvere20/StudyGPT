@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronUp,
   Search, ChevronsDownUp, ChevronsUpDown, Package,
   CircleCheck, Circle, Trash2, GripVertical,
-  Pencil, X, Loader2,
+  Pencil, X, Loader2, AlertTriangle,
 } from 'lucide-react';
 import { cn, countWords } from '../utils';
 import { LazyMarkdown } from './LazyMarkdown';
@@ -42,6 +42,12 @@ export function ResultsSection() {
   const studiedCount = plan.chapters.filter(ch => studiedChapters.has(ch.id)).length;
   const totalChapters = plan.chapters.length;
   const progressPercent = totalChapters > 0 ? Math.round((studiedCount / totalChapters) * 100) : 0;
+  const verificationBanner = plan.verificationReport?.status !== 'OK'
+    ? plan.verificationReport
+    : null;
+  const wordRetentionPercent = verificationBanner
+    ? Math.round(verificationBanner.word_ratio * 100)
+    : null;
 
   return (
     <motion.div
@@ -111,6 +117,41 @@ export function ResultsSection() {
           </button>
         </div>
       </div>
+
+      {verificationBanner && (
+        <div
+          role="alert"
+          className={cn(
+            "rounded-2xl border px-5 py-4 shadow-sm",
+            verificationBanner.status === 'CRITICAL'
+              ? "border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-100"
+              : "border-orange-300 bg-orange-50 text-orange-900 dark:border-orange-800 dark:bg-orange-950/40 dark:text-orange-100"
+          )}
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+            <div className="space-y-2">
+              <div>
+                <p className="text-sm font-extrabold uppercase tracking-wide">
+                  {verificationBanner.status === 'CRITICAL'
+                    ? 'Kritieke waarschuwing voor contentbehoud'
+                    : 'Waarschuwing voor contentbehoud'}
+                </p>
+                <p className="mt-1 text-sm font-medium">
+                  {wordRetentionPercent}% tekst behouden · oefeningen {verificationBanner.exercise_count_generated}/{verificationBanner.exercise_count_original}
+                </p>
+              </div>
+              <div className="space-y-1">
+                {verificationBanner.issues.map((issue) => (
+                  <p key={issue} className="text-sm leading-relaxed">
+                    {issue}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Setup panel */}
       <AnimatePresence>

@@ -4,11 +4,27 @@ import logging
 import math
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
 
 from openai import APIStatusError, AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from models.schemas import Chapter, StudyPlan
+from models.schemas import (
+    Chapter,
+    CourseMetadata,
+    SectionAnalysis,
+    StructureAnalysis,
+    StudyPlan,
+)
+from services.content_verifier import (
+    _count_exercises,
+    _count_formulas,
+    _count_tables,
+    _extract_signature_keywords,
+    _normalize_markdown_text,
+    verify_content_preservation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +36,15 @@ _RETRY_DELAYS = (1, 2, 4)  # exponential backoff in seconden voor 429/503
 TARGET_CHUNK_CHARS = 60_000
 HARD_CHUNK_CHARS = 80_000
 MIN_RECURSIVE_CHUNK_CHARS = 4_000
+REFERENCE_TOPIC = "Referentie"
+RECOVERY_TOPIC = "Ontbrekend Materiaal"
+STRUCTURE_MODEL = "gpt-4.1-mini"
+PRESERVATION_MODEL = "gpt-4.1"
+METADATA_MODEL = "gpt-4.1-mini"
+COURSE_METADATA_MODEL = "gpt-4o-mini"
+DEFAULT_RECOVERY_SUMMARY = (
+    "Automatisch hersteld bronmateriaal dat in de eerste AI-generatie onvoldoende behouden bleef."
+)
 
 
 def _get_client() -> AsyncOpenAI:
@@ -29,177 +54,199 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-STUDY_PLAN_PROMPT = """You are an expert educational content architect specializing in creating AI-tutoring-ready study materials. Your output will be uploaded as a Knowledge Base for a Custom GPT that will interactively tutor a student through ALL material.
+STRUCTURE_ANALYSIS_PROMPT = """You analyze document structure only. You do NOT rewrite or summarize content.
 
-## YOUR MISSION
-Transform the provided document content into a perfectly structured "Master Study Architecture" organized BY TOPIC/SUBJECT. Each topic groups related chapters together. Do NOT organize by week — organize by logical subject matter.
-
-## TWO DISTINCT LAYERS — READ CAREFULLY
-
-### SOURCE LAYER: the `content` field — ZERO DATA LOSS (PRIORITEIT #1 — ABSOLUTE VEREISTE)
-- The `content` field is a verbatim reproduction of the source material with navigation structure added.
-- PRESERVE ALL content exactly as-is. Every table, formula, exercise, definition, example, code block, footnote, and paragraph MUST appear in your `content` output — word for word.
-- NEVER summarize, paraphrase, shorten, omit, or rewrite ANY part of the source inside `content`. This is non-negotiable.
-- You ONLY add Markdown structural markers (##, ###, OEFENING:, DEFINITIE:, Kernbegrippen) — you NEVER remove or alter existing text.
-- If the source has a table → reproduce the full table. If it has a formula → reproduce the full formula. If it has an exercise with multiple sub-questions → reproduce ALL sub-questions and answers.
-- If content seems incomplete or cut off, add inside `content`: "[WAARSCHUWING: Document content lijkt hier onvolledig — controleer het bronbestand]"
-- CONTENT INTEGRITY CHECK: Before finalizing each chapter, verify: (a) no sentences were dropped, (b) no tables were shortened, (c) no exercises were omitted.
-
-### TEACHER LAYER: the `summary` field — AI SYNTHESIS
-- The `summary` field is a short AI-generated synthesis. It is explicitly NOT the source text.
-- Write 2–3 sentences (max 60 words) describing the chapter's core contribution and what the student will learn.
-- This is derived from the content; it does NOT replace it.
-
-## TOPIC ORGANIZATION RULES
-- Group chapters into logical TOPICS (onderwerpen/thema's) based on subject matter.
-- A topic is a high-level theme (e.g. "Lineaire Algebra", "Statistiek", "Marketing Strategie").
-- Each topic can contain one or more chapters.
-- Order topics in a logical learning sequence (foundations first, advanced topics later).
-- Use clear, descriptive topic names in the language of the document content.
-
-## RAG OPTIMIZATION RULES (for GPT's file_search)
-1. **Semantic Headers**: Start every major section with a descriptive H2/H3 header containing the key concept name.
-2. **Keyword Anchors**: At the start of each chapter, include a "Kernbegrippen" (key concepts) list.
-3. **Self-Contained Sections**: Each section should be understandable on its own.
-4. **Cross-References**: When content references other chapters, explicitly name them: "Zie ook: [topic], Hoofdstuk [nr] - [titel]".
-5. **Exercise Markers**: Mark exercises clearly with "OEFENING:" prefix.
-6. **Definition Markers**: Mark definitions with "DEFINITIE:" prefix.
-
-## CONTENT FORMATTING RULES
-- TEXT: Preserve perfectly. Use Markdown headers (##, ###) for structure.
-- TABLES: Keep as Markdown tables with aligned columns.
-- MATH & FORMULAS: Use LaTeX. Inline: $x^2$. Block: $$E=mc^2$$.
-- EXERCISES & SOLUTIONS: Format as numbered lists with "Vraag:" and "Antwoord:" labels.
-- DIAGRAMS: Describe in detail with all data points, labels, and conclusions.
-
-## OUTPUT STRUCTURE
-Return this exact JSON structure:
+Return valid JSON with this exact shape:
 {
-  "chapters": [
+  "sections": [
     {
-      "id": "T1-C1",
-      "title": "Descriptive chapter title",
-      "summary": "2-3 sentence summary",
-      "topic": "Topic Name",
-      "content": "Full Markdown content..."
+      "start_marker": "exact start marker from input",
+      "section_type": "theory | exercise | definition | example | formula",
+      "suggested_topic": "Topic name",
+      "suggested_chapter_title": "Chapter title",
+      "related_sections": ["other start marker"]
     }
   ],
-  "topics": ["Topic 1", "Topic 2", "Topic 3"],
-  "masterStudyMap": "<markdown table>",
-  "gptSystemInstructions": "<detailed instructions>"
+  "suggested_topics": ["Topic 1", "Topic 2"],
+  "document_type": "slides | schedule | formula_sheet | exam | article | textbook | mixed | auto"
 }
 
-## MASTER STUDY MAP
-Generate a Markdown table mapping EVERY chapter to:
-- Topic name
-- Chapter title
-- Core concepts (comma-separated)
-- Number of exercises
-- Prerequisites (which chapters should be studied first)
-
-## GPT SYSTEM INSTRUCTIONS
-Generate detailed instructions for the Custom GPT that include:
-- How to use file_search to find relevant content
-- How to track which chapters the student has completed
-- How to quiz the student using the marked exercises
-- How to explain concepts using the exact content from the knowledge base
-- How to guide study per topic (complete one topic before moving to the next)
-- How to use active recall and spaced repetition principles
-- Instructions to ALWAYS cite which topic/chapter information comes from
-
-## DOCUMENT-TYPE SPECIFIC INSTRUCTIONS
-The user input starts with `Document type: <type>`. Apply the rules below that match the detected type.
-
-### type = "slides"
-- Each slide or logical slide-group becomes one chapter. Reconstruct the **narrative line** between slides: what story do they tell together? Use the slide titles as H2 headers.
-- Short bullet points on a slide are often compressed prose — expand them into full sentences in `content` where the original wording allows it, but do NOT invent content not on the slide.
-- Mark any slide that contains an exercise or poll as `OEFENING:`.
-
-### type = "schedule"
-- Extract the week/deadline structure as a **metadata block** at the top of each chapter's `content`:
-  ```
-  PLANNING: Week X — <datum> — <onderwerp>
-  DEADLINE: <beschrijving> — <datum>
-  ```
-- Use the schedule to determine the logical **topic order** (earlier weeks = earlier topics).
-- Create one chapter per week or thematic block; preserve all dates verbatim.
-
-### type = "formula_sheet"
-- Do NOT create a separate chapter per formula. Instead, **embed formulas into the chapters of the relevant topic** they belong to.
-- Add a dedicated `## Formuleblad` section within each chapter that lists applicable formulas.
-- Treat the entire formula sheet as **reference material**: every formula must appear somewhere in the output.
-- Add a single top-level chapter titled "Formuleoverzicht" that lists ALL formulas in one place for quick lookup.
-
-### type = "exam"
-- Mark EVERY question with `OEFENING:` prefix.
-- Preserve the **point weighting** verbatim: `OEFENING: (3 punten) Vraag...`
-- Group questions by subject into topics — do not create one chapter per question.
-- If model answers are present, include them under `Antwoord:` labels.
-- Multiple-choice options must be reproduced in full: `(a) ... (b) ... (c) ... (d) ...`
-
-### type = "article"
-- Preserve the academic **argument structure**: introduction → methodology → results → discussion → conclusion.
-- Retain all in-text citations exactly as written: `(Author, Year)` or `[N]`.
-- The reference list is its own chapter titled "Literatuurlijst" or "Referenties".
-
-### type = "textbook"
-- Each numbered section or subsection becomes its own chapter where appropriate.
-- Preserve all **worked examples** completely — these are pedagogically critical.
-- Mark definitions with `DEFINITIE:` and worked examples with `VOORBEELD:`.
-
-### type = "mixed" or "auto"
-- Apply the general rules. If parts of the document clearly match a specific type above, apply those rules to that section.
-
-## CRITICAL JSON SAFETY
-Your response MUST be valid, complete JSON. If approaching output limits, gracefully close the JSON and add a warning."""
+Rules:
+- Use the EXACT provided `start_marker` values.
+- Return the SAME number of sections as the input and keep the SAME order.
+- Determine chapter boundaries by reusing the same `suggested_topic` + `suggested_chapter_title` across contiguous sections.
+- `related_sections` must only reference existing `start_marker` values.
+- If the material is a formula sheet, classify sections as `formula`, use topic `Referentie`, and use chapter title `Formuleoverzicht`.
+- Base your decision only on headers, first-sentence previews, marker keywords, and table headers."""
 
 
-CHUNK_STUDY_PLAN_PROMPT = """You are processing a PARTIAL slice of a larger course document.
+CONTENT_PRESERVATION_PROMPT = """You preserve the exact source content for a predetermined chapter.
 
-Your job is to convert ONLY this chunk into JSON chapter objects that preserve the original material.
+Return valid JSON with this exact shape:
+{
+  "content": "Full preserved markdown"
+}
 
 Rules:
-- Preserve all substantive content from this chunk.
-- Do not invent missing text from other chunks.
-- Do not drop exercises, definitions, formulas, tables, or examples.
-- You may split the chunk into multiple chapters if that improves structure.
-- Use semantic headers and add "Kernbegrippen", "OEFENING:", "DEFINITIE:" where helpful.
-- Assign a descriptive topic name to each chapter based on its subject matter.
-- Use placeholder IDs like "TEMP-1". The application will renumber them later.
+- The chapter title and topic are already decided. Do NOT invent new chapter boundaries.
+- Preserve the source text EXACTLY. Do not summarize, paraphrase, shorten, omit, or rename source content.
+- You may only add light Markdown structure and explicit markers such as `Kernbegrippen`, `OEFENING:`, `DEFINITIE:`, `VOORBEELD:`, and `### Relevante Formules` when they are directly supported by the source text or chapter analysis.
+- Keep formulas literal in LaTeX and keep full tables and exercises.
+- Generate NO summary and NO metadata in this step.
+- Return only the preserved markdown for this chunk of the predetermined chapter."""
 
-Return this exact JSON structure:
+
+METADATA_PROMPT = """You generate lightweight study metadata only. You do NOT rewrite chapter titles, topics, or source content.
+
+Return valid JSON with this exact shape:
 {
-  "chapters": [{"id": "TEMP-1", "title": "...", "summary": "...", "topic": "Topic Name", "content": "..."}]
-}"""
+  "summaries": ["2-3 sentence summary", "..."],
+  "prerequisites": [["Chapter title"], []],
+  "master_study_map": "<markdown table>",
+  "gpt_system_instructions": "<instructions>"
+}
+
+Rules:
+- The `summaries` list MUST have the same length and order as the input chapters.
+- Each summary must be 2-3 sentences and at most 60 words.
+- `prerequisites` must align 1:1 with the input chapters and contain chapter titles only.
+- `master_study_map` must include topic, chapter title, core concepts, exercise count, and prerequisites.
+- `gpt_system_instructions` must tell the tutor to cite topic/chapter sources and use active recall + spaced repetition.
+- Use only the provided chapter metadata."""
 
 
-TOPIC_PLANNER_PROMPT = """You are organizing course chapters into logical topics/subjects.
+COURSE_METADATA_PROMPT = """Return valid JSON only. Do not wrap it in markdown. Do not add explanation.
 
-You receive an ordered list of chapters. Your job:
-- Assign each chapter to a logical topic (onderwerp/thema) based on its content.
-- Topics should be high-level themes that group related chapters.
-- Keep the chapter order EXACTLY as given.
-- Use clear, descriptive topic names in the same language as the chapter content.
-- A topic can contain 1 or more chapters.
-- Order topics logically (foundations first, advanced later).
-
-Return this exact JSON structure:
+Return this exact shape:
 {
-  "topics": ["Topic 1", "Topic 2"],
-  "assignments": ["Topic 1", "Topic 1", "Topic 2", "Topic 2"]
-}"""
+  "has_formulas": false,
+  "has_exercises": false,
+  "has_code": false,
+  "primary_language": "nl",
+  "exercise_types": [],
+  "total_exercises": 0,
+  "detected_tools": [],
+  "difficulty_keywords": []
+}
+
+Rules:
+- Every field must be present.
+- Use booleans, strings, integers, and arrays only. Never use null.
+- Use [] for empty lists.
+- `primary_language` must be a short lowercase language code like `nl` or `en`.
+- `exercise_types` may only contain: `meerkeuze`, `open`, `berekening`.
+- `detected_tools` may only include tools explicitly visible in the input, such as `R`, `Python`, `SPSS`, `Excel`, `Stata`, `MATLAB`.
+- Be conservative: if unsure, prefer false or an empty list.
+
+Recognition guidance:
+- Detect formulas from LaTeX/math markers such as `$$`, `$...$`, `\\mu`, `\\sigma`, `\\int`, `\\sum`.
+- Detect code from fenced code blocks, inline code, or syntax such as `library(`, `import`, `def`, `<-`, `ggplot`, `lm(`.
+- Detect exercises from markers such as `OEFENING:`, `Vraag 1`, or exercise-oriented sections.
+- Detect `meerkeuze` from explicit multiple-choice wording or visible options like `A.`, `B.`, `C.`, `D.`.
+- Detect `berekening` from words like `bereken`, `werk uit`, `uitwerking`.
+- Detect `open` from prompt styles like `verklaar`, `beschrijf`, `licht toe`, `toon aan`.
+- `difficulty_keywords` should only include visible, course-relevant challenge terms from the input."""
 
 
 DEFAULT_GPT_SYSTEM_INSTRUCTIONS = """Gebruik de knowledge base als primaire bron. Werk onderwerp voor onderwerp, citeer altijd expliciet het onderwerp en hoofdstuk, gebruik file_search om relevante stukken op te halen, en stel actieve-recall-vragen op basis van de gemarkeerde OEFENINGEN. Leg concepten uit met de exacte inhoud uit de knowledge base, bewaak studievoortgang per hoofdstuk, verwijs terug naar prerequisites wanneer basiskennis ontbreekt, en gebruik gespreide herhaling wanneer een student eerder behandelde stof opnieuw lastig vindt."""
 
+_HEADING_RE = re.compile(r"(?m)^#{1,6}\s+(.+)$")
+_FORMULA_RE = re.compile(r"\$\$[\s\S]+?\$\$|\$[^$\n]+?\$|\\[A-Za-z]+")
+_SENTENCE_RE = re.compile(r"(.+?[.!?])(?:\s|$)")
+_NORMALIZE_SECTION_RE = re.compile(r"^(theory|exercise|definition|example|formula)$")
+_CODE_FENCE_RE = re.compile(r"```(?:[A-Za-z0-9_+-]+)?\n[\s\S]*?```")
+_MULTIPLE_CHOICE_RE = re.compile(r"(?im)^\s*(?:[A-D][\.\)]|[a-d][\.\)])\s+")
+_INLINE_CODE_SIGNAL_RE = re.compile(r"`[^`\n]+`|(?:^|\W)(?:library\(|import\s|def\s|<-|ggplot|lm\()")
+_LANGUAGE_CODE_ALLOWLIST = {"nl", "en"}
+_EXERCISE_TYPE_ALLOWLIST = {"meerkeuze", "open", "berekening"}
+_TOOL_CANONICAL_MAP = {
+    "r": "R",
+    "python": "Python",
+    "spss": "SPSS",
+    "excel": "Excel",
+    "stata": "Stata",
+    "matlab": "MATLAB",
+}
+_DIFFICULTY_KEYWORDS = (
+    "bewijs",
+    "afleiding",
+    "integratie",
+    "regressie",
+    "hypothesetoets",
+    "optimalisatie",
+    "differentiaalvergelijking",
+    "statistische significantie",
+)
+_DUTCH_MARKERS = {"de", "het", "een", "voor", "met", "zoals", "bereken", "hoofdstuk"}
+_ENGLISH_MARKERS = {"the", "and", "with", "chapter", "calculate", "question", "because"}
 
-class ChunkStudyPlan(BaseModel):
-    chapters: list[Chapter]
+
+class PreservationResponse(BaseModel):
+    content: str
 
 
-class TopicPlan(BaseModel):
-    topics: list[str]
-    assignments: list[str]
+class PreservedChapter(BaseModel):
+    title: str
+    topic: str
+    content: str
+    section_markers: list[str] = Field(default_factory=list)
+    section_types: list[str] = Field(default_factory=list)
+    key_concepts: list[str] = Field(default_factory=list)
+    related_section_markers: list[str] = Field(default_factory=list)
+
+
+class PlanMetadata(BaseModel):
+    summaries: list[str]
+    prerequisites: list[list[str]]
+    master_study_map: str
+    gpt_system_instructions: str
+    course_metadata: CourseMetadata = Field(default_factory=CourseMetadata)
+
+
+@dataclass
+class SourceSection:
+    index: int
+    start_marker: str
+    content: str
+    headers: list[str]
+    first_sentence: str
+    markers: list[str]
+    table_headers: list[str]
+
+
+@dataclass
+class ChapterPlan:
+    index: int
+    title: str
+    topic: str
+    source_sections: list[SourceSection]
+    related_sections: list[str]
+    section_types: list[str]
+
+
+@dataclass
+class RecoveryBlock:
+    index: int
+    title_marker: str
+    normalized_title: str
+    content: str
+    normalized_content: str
+    words: int
+    keywords: set[str]
+    snippets: list[str]
+    has_exercise: bool
+    has_table: bool
+    has_formula: bool
+
+
+@dataclass
+class GeneratedChapterProfile:
+    chapter_id: str
+    normalized_content: str
+    keywords: set[str]
+    has_exercise: bool
+    has_table: bool
+    has_formula: bool
 
 
 async def generate_study_plan(
@@ -208,176 +255,260 @@ async def generate_study_plan(
     on_progress: ProgressCallback | None = None,
     max_retries: int = 3,
 ) -> StudyPlan:
-    """
-    Try a direct GPT-4.1 study-plan generation first.
-    If the payload is too large, automatically fall back to chunked generation.
-    """
     if on_progress:
-        await on_progress("ai", 50, "Studieplan genereren met GPT-4.1...")
+        await on_progress("ai", 5, "Documentstructuur analyseren...")
 
-    try:
-        return await _generate_full_study_plan(
-            markdown_content,
-            doc_type=doc_type,
-            on_progress=on_progress,
-            max_retries=max_retries,
-        )
-    except Exception as exc:
-        if not _should_fallback_to_chunking(exc):
-            raise
-
-        logger.warning(
-            "OpenAI request too large for direct generation; falling back to chunked processing: %s",
-            exc,
-        )
-        if on_progress:
-            await on_progress(
-                "ai",
-                55,
-                "Input is erg groot. Overschakelen naar automatische batchverwerking...",
-            )
-
-        return await _generate_chunked_study_plan(
-            markdown_content,
-            doc_type=doc_type,
-            on_progress=on_progress,
-            max_retries=max_retries,
-        )
-
-
-async def _generate_full_study_plan(
-    markdown_content: str,
-    *,
-    doc_type: str,
-    on_progress: ProgressCallback | None,
-    max_retries: int,
-) -> StudyPlan:
-    for attempt in range(max_retries):
-        try:
-            parsed = await _call_json_completion(
-                system_prompt=STUDY_PLAN_PROMPT,
-                user_content=f"Document type: {doc_type}\n\nDocument content:\n\n{markdown_content}",
-            )
-            plan = _parse_full_study_plan(parsed)
-
-            if on_progress:
-                await on_progress("ai", 100, "Studieplan succesvol gegenereerd!")
-
-            logger.info(
-                "Study plan generated directly: %s chapters, %s topics",
-                len(plan.chapters),
-                len(plan.topics),
-            )
-            return plan
-        except Exception as exc:
-            if _should_fallback_to_chunking(exc):
-                raise
-
-            if attempt < max_retries - 1:
-                wait_time = 2 ** (attempt + 1)
-                logger.warning(
-                    "OpenAI call failed (attempt %s/%s): %s. Retrying in %ss...",
-                    attempt + 1,
-                    max_retries,
-                    exc,
-                    wait_time,
-                )
-                if on_progress:
-                    await on_progress(
-                        "ai",
-                        50,
-                        f"Fout opgetreden, opnieuw proberen ({attempt + 2}/{max_retries})...",
-                    )
-                await asyncio.sleep(wait_time)
-                continue
-
-            logger.error("OpenAI call failed after %s attempts: %s", max_retries, exc)
-            raise
-
-
-async def _generate_chunked_study_plan(
-    markdown_content: str,
-    *,
-    doc_type: str,
-    on_progress: ProgressCallback | None,
-    max_retries: int,
-) -> StudyPlan:
-    chunks = _split_markdown_into_chunks(markdown_content)
-    total_chunks = len(chunks)
-    all_chapters: list[Chapter] = []
-
-    logger.info("Generating study plan in %s automatic batches", total_chunks)
-
-    for index, chunk in enumerate(chunks, start=1):
-        start_progress = 55 + math.floor((index - 1) * 35 / max(total_chunks, 1))
-        end_progress = 55 + math.floor(index * 35 / max(total_chunks, 1))
-
-        if on_progress:
-            await on_progress(
-                "ai",
-                start_progress,
-                f"Automatische batch {index}/{total_chunks} verwerken...",
-            )
-
-        chunk_chapters = await _generate_chunk_chapters(
-            chunk,
-            doc_type=doc_type,
-            chunk_index=index,
-            total_chunks=total_chunks,
-            max_retries=max_retries,
-        )
-        all_chapters.extend(chunk_chapters)
-
-        if on_progress:
-            await on_progress(
-                "ai",
-                end_progress,
-                f"Batch {index}/{total_chunks} verwerkt.",
-            )
-
-    if not all_chapters:
-        raise ValueError("Geen hoofdstukken gegenereerd uit automatische batchverwerking.")
-
-    plan = await _finalize_study_plan(
-        all_chapters,
-        gpt_system_instructions=DEFAULT_GPT_SYSTEM_INSTRUCTIONS,
-        on_progress=on_progress,
+    structure_analysis = await _analyze_structure(
+        markdown_content,
+        doc_type_hint=doc_type,
+        max_retries=max_retries,
     )
 
     if on_progress:
         await on_progress(
             "ai",
-            100,
-            "Studieplan succesvol gegenereerd via automatische batchverwerking!",
+            20,
+            f"Structuuranalyse voltooid ({len(structure_analysis.sections)} secties).",
         )
 
+    preserved_chapters = await _generate_chunked_study_plan(
+        markdown_content,
+        structure_analysis=structure_analysis,
+        on_progress=on_progress,
+        max_retries=max_retries,
+    )
+
+    if on_progress:
+        await on_progress(
+            "ai",
+            80,
+            "Content-preservatie voltooid. Metadata genereren...",
+        )
+
+    metadata = await _generate_metadata(
+        preserved_chapters,
+        document_type=structure_analysis.document_type,
+        max_retries=max_retries,
+    )
+
+    if on_progress:
+        await on_progress("ai", 95, "Metadata voltooid. Studieplan verifiëren...")
+
+    plan = _finalize_study_plan(markdown_content, preserved_chapters, metadata)
+
+    if on_progress:
+        await on_progress("ai", 100, "Studieplan succesvol gegenereerd!")
+
     logger.info(
-        "Study plan generated via chunked flow: %s chapters, %s topics",
+        "Study plan generated via 3-phase pipeline: %s chapters, %s topics, verification=%s",
         len(plan.chapters),
         len(plan.topics),
+        plan.verificationReport.status if plan.verificationReport else "unknown",
     )
     return plan
+
+
+async def _analyze_structure(
+    markdown: str,
+    *,
+    doc_type_hint: str = "auto",
+    max_retries: int = 3,
+) -> StructureAnalysis:
+    source_sections = _extract_source_sections(markdown)
+    if not source_sections:
+        raise ValueError("Geen bruikbare documentsecties gevonden voor structuuranalyse.")
+
+    outline_payload = {
+        "document_type_hint": doc_type_hint,
+        "sections": [
+            {
+                "index": section.index,
+                "start_marker": section.start_marker,
+                "headers": section.headers,
+                "first_sentence": section.first_sentence,
+                "markers": section.markers,
+                "table_headers": section.table_headers,
+            }
+            for section in source_sections
+        ],
+    }
+
+    for attempt in range(max_retries):
+        try:
+            parsed = await _call_json_completion(
+                model=STRUCTURE_MODEL,
+                system_prompt=STRUCTURE_ANALYSIS_PROMPT,
+                user_content=json.dumps(outline_payload, ensure_ascii=False),
+            )
+            structure_analysis = StructureAnalysis.model_validate(
+                _unwrap_payload(parsed, "structure_analysis", "structureAnalysis")
+            )
+            return _normalize_structure_analysis(
+                structure_analysis,
+                source_sections,
+                doc_type_hint,
+            )
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** (attempt + 1)
+                logger.warning(
+                    "Structure analysis failed (attempt %s/%s): %s. Retrying in %ss...",
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                    wait_time,
+                )
+                await asyncio.sleep(wait_time)
+                continue
+
+            logger.warning(
+                "Structure analysis failed after %s attempts. Falling back to heuristic analysis: %s",
+                max_retries,
+                exc,
+            )
+            return _fallback_structure_analysis(source_sections, doc_type_hint)
+
+    raise RuntimeError("Unreachable")
+
+
+async def _generate_chunked_study_plan(
+    markdown_content: str,
+    *,
+    structure_analysis: StructureAnalysis,
+    on_progress: ProgressCallback | None,
+    max_retries: int,
+) -> list[PreservedChapter]:
+    source_sections = _extract_source_sections(markdown_content)
+    if not source_sections:
+        raise ValueError("Geen bruikbare documentsecties gevonden voor content-preservatie.")
+
+    normalized_analysis = _normalize_structure_analysis(
+        structure_analysis,
+        source_sections,
+        structure_analysis.document_type,
+    )
+    chapter_plans = _build_chapter_plans(source_sections, normalized_analysis)
+    if not chapter_plans:
+        raise ValueError("Geen chapter-plannen afgeleid uit de structuuranalyse.")
+
+    preserved_chapters: list[PreservedChapter] = []
+    total_chapters = len(chapter_plans)
+
+    for chapter_index, chapter_plan in enumerate(chapter_plans, start=1):
+        start_progress = 20 + math.floor((chapter_index - 1) * 60 / max(total_chapters, 1))
+        end_progress = 20 + math.floor(chapter_index * 60 / max(total_chapters, 1))
+
+        if on_progress:
+            await on_progress(
+                "ai",
+                start_progress,
+                f"Content exact preserveren voor hoofdstuk {chapter_index}/{total_chapters}...",
+            )
+
+        raw_content = _compose_chapter_content(chapter_plan)
+        chapter_parts = (
+            _split_markdown_into_chunks(raw_content)
+            if len(raw_content) > TARGET_CHUNK_CHARS
+            else [raw_content]
+        )
+
+        preserved_parts: list[str] = []
+        for part_index, part in enumerate(chapter_parts, start=1):
+            if on_progress and len(chapter_parts) > 1:
+                part_progress = start_progress + math.floor(
+                    (part_index - 1) * max(end_progress - start_progress, 1)
+                    / max(len(chapter_parts), 1)
+                )
+                await on_progress(
+                    "ai",
+                    part_progress,
+                    (
+                        f"Hoofdstuk {chapter_index}/{total_chapters} "
+                        f"deel {part_index}/{len(chapter_parts)} preserveren..."
+                    ),
+                )
+
+            preserved_parts.append(
+                await _generate_chunk_chapters(
+                    part,
+                    chapter_plan=chapter_plan,
+                    structure_analysis=normalized_analysis,
+                    chunk_index=part_index,
+                    total_chunks=len(chapter_parts),
+                    max_retries=max_retries,
+                )
+            )
+
+        merged_content = "\n\n".join(part.strip() for part in preserved_parts if part.strip()).strip()
+        if not merged_content:
+            raise ValueError(f"Lege content teruggekregen voor hoofdstuk '{chapter_plan.title}'.")
+
+        preserved_chapters.append(
+            PreservedChapter(
+                title=chapter_plan.title,
+                topic=chapter_plan.topic,
+                content=merged_content,
+                section_markers=[section.start_marker for section in chapter_plan.source_sections],
+                section_types=chapter_plan.section_types,
+                key_concepts=_extract_core_concepts(merged_content),
+                related_section_markers=chapter_plan.related_sections,
+            )
+        )
+
+        if on_progress:
+            await on_progress(
+                "ai",
+                end_progress,
+                f"Hoofdstuk {chapter_index}/{total_chapters} gepreserveerd.",
+            )
+
+    return preserved_chapters
 
 
 async def _generate_chunk_chapters(
     chunk: str,
     *,
-    doc_type: str,
+    chapter_plan: ChapterPlan,
+    structure_analysis: StructureAnalysis,
     chunk_index: int,
     total_chunks: int,
     max_retries: int,
-) -> list[Chapter]:
+) -> str:
+    if not chunk.strip():
+        return ""
+
+    relevant_sections = [
+        section.model_dump()
+        for section in structure_analysis.sections
+        if section.start_marker in {item.start_marker for item in chapter_plan.source_sections}
+    ]
+
+    payload = {
+        "document_type": structure_analysis.document_type,
+        "chapter": {
+            "title": chapter_plan.title,
+            "topic": chapter_plan.topic,
+            "section_markers": [section.start_marker for section in chapter_plan.source_sections],
+            "section_types": chapter_plan.section_types,
+            "related_sections": chapter_plan.related_sections,
+            "part_index": chunk_index,
+            "total_parts": total_chunks,
+        },
+        "structure_sections": relevant_sections,
+        "content": chunk,
+    }
+
     for attempt in range(max_retries):
         try:
             parsed = await _call_json_completion(
-                system_prompt=CHUNK_STUDY_PLAN_PROMPT,
-                user_content=(
-                    f"Document type: {doc_type}\n"
-                    f"Chunk {chunk_index}/{total_chunks}\n\n"
-                    f"Document chunk:\n\n{chunk}"
-                ),
+                model=PRESERVATION_MODEL,
+                system_prompt=CONTENT_PRESERVATION_PROMPT,
+                user_content=json.dumps(payload, ensure_ascii=False),
             )
-            return _parse_chunk_plan(parsed)
+            response = PreservationResponse.model_validate(
+                _unwrap_payload(parsed, "preservation", "preserved_content", "chapter")
+            )
+            return response.content.strip()
         except Exception as exc:
             if _should_fallback_to_chunking(exc) and len(chunk) > MIN_RECURSIVE_CHUNK_CHARS:
                 mid = len(chunk) // 2
@@ -389,30 +520,35 @@ async def _generate_chunk_chapters(
                 right = chunk[split_at:].strip()
                 if left and right:
                     logger.warning(
-                        "Chunk %s/%s still too large; recursively splitting",
+                        "Preservation chunk %s/%s for chapter '%s' still too large; recursively splitting.",
                         chunk_index,
                         total_chunks,
+                        chapter_plan.title,
                     )
-                    left_chapters = await _generate_chunk_chapters(
+                    left_content = await _generate_chunk_chapters(
                         left,
-                        doc_type=doc_type,
+                        chapter_plan=chapter_plan,
+                        structure_analysis=structure_analysis,
                         chunk_index=chunk_index,
                         total_chunks=total_chunks,
                         max_retries=max_retries,
                     )
-                    right_chapters = await _generate_chunk_chapters(
+                    right_content = await _generate_chunk_chapters(
                         right,
-                        doc_type=doc_type,
+                        chapter_plan=chapter_plan,
+                        structure_analysis=structure_analysis,
                         chunk_index=chunk_index,
                         total_chunks=total_chunks,
                         max_retries=max_retries,
                     )
-                    return left_chapters + right_chapters
+                    return "\n\n".join(
+                        part.strip() for part in (left_content, right_content) if part.strip()
+                    )
 
             if attempt < max_retries - 1 and not _should_fallback_to_chunking(exc):
                 wait_time = 2 ** (attempt + 1)
                 logger.warning(
-                    "Chunk call failed (attempt %s/%s): %s. Retrying in %ss...",
+                    "Preservation chunk failed (attempt %s/%s): %s. Retrying in %ss...",
                     attempt + 1,
                     max_retries,
                     exc,
@@ -423,14 +559,132 @@ async def _generate_chunk_chapters(
 
             raise
 
+    raise RuntimeError("Unreachable")
 
-async def _call_json_completion(*, system_prompt: str, user_content: str) -> dict:
-    """Voert een OpenAI JSON-completion uit met automatische retry bij 429/503.
 
-    Bij een RateLimitError (429) of ServiceUnavailableError (503) wordt maximaal
-    3 keer opnieuw geprobeerd met exponential backoff: 1s, 2s, 4s.
-    Alle andere fouten worden direct doorgegeven aan de aanroeper.
-    """
+async def _generate_metadata(
+    chapters: list[PreservedChapter],
+    *,
+    document_type: str,
+    max_retries: int,
+) -> PlanMetadata:
+    chapter_payload = [
+        {
+            "index": index,
+            "title": chapter.title,
+            "topic": chapter.topic,
+            "core_concepts": chapter.key_concepts or _extract_core_concepts(chapter.content),
+            "section_types": chapter.section_types,
+        }
+        for index, chapter in enumerate(chapters, start=1)
+    ]
+
+    payload = {
+        "document_type": document_type,
+        "chapters": chapter_payload,
+    }
+
+    for attempt in range(max_retries):
+        try:
+            parsed = await _call_json_completion(
+                model=METADATA_MODEL,
+                system_prompt=METADATA_PROMPT,
+                user_content=json.dumps(payload, ensure_ascii=False),
+            )
+            metadata = PlanMetadata.model_validate(
+                _unwrap_payload(parsed, "metadata", "plan_metadata", "planMetadata")
+            )
+            metadata.course_metadata = await _generate_course_metadata(
+                chapters,
+                max_retries=max_retries,
+            )
+            _validate_plan_metadata(metadata, chapter_count=len(chapters))
+            return _normalize_plan_metadata(metadata, chapters)
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** (attempt + 1)
+                logger.warning(
+                    "Metadata generation failed (attempt %s/%s): %s. Retrying in %ss...",
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                    wait_time,
+                )
+                await asyncio.sleep(wait_time)
+                continue
+
+            logger.warning(
+                "Metadata generation failed after %s attempts. Falling back to deterministic metadata: %s",
+                max_retries,
+                exc,
+            )
+            return _fallback_plan_metadata(chapters)
+
+    raise RuntimeError("Unreachable")
+
+
+async def _generate_course_metadata(
+    chapters: list[PreservedChapter],
+    *,
+    max_retries: int,
+) -> CourseMetadata:
+    payload = {
+        "chapters": [
+            {
+                "index": index,
+                "title": chapter.title,
+                "topic": chapter.topic,
+                "core_concepts": chapter.key_concepts or _extract_core_concepts(chapter.content),
+                "section_types": chapter.section_types,
+                "exercise_count": _count_exercises(chapter.content),
+                "has_formula_markers": _has_formula_markers(chapter.content),
+                "has_code_markers": _has_code_markers(chapter.content),
+                "sample_markers": _extract_course_sample_markers(chapter.content),
+            }
+            for index, chapter in enumerate(chapters, start=1)
+        ]
+    }
+
+    for attempt in range(max_retries):
+        try:
+            parsed = await _call_json_completion(
+                model=COURSE_METADATA_MODEL,
+                system_prompt=COURSE_METADATA_PROMPT,
+                user_content=json.dumps(payload, ensure_ascii=False),
+            )
+            course_metadata = CourseMetadata.model_validate(
+                _unwrap_payload(parsed, "course_metadata", "courseMetadata", "metadata")
+            )
+            return _normalize_course_metadata(course_metadata)
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** (attempt + 1)
+                logger.warning(
+                    "Course metadata generation failed (attempt %s/%s): %s. Retrying in %ss...",
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                    wait_time,
+                )
+                await asyncio.sleep(wait_time)
+                continue
+
+            logger.warning(
+                "Course metadata generation failed after %s attempts. Falling back to heuristics: %s",
+                max_retries,
+                exc,
+            )
+            return _fallback_course_metadata_from_preserved_chapters(chapters)
+
+    raise RuntimeError("Unreachable")
+
+
+async def _call_json_completion(
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+) -> dict:
     client = _get_client()
     last_exc: APIStatusError | None = None
 
@@ -448,7 +702,7 @@ async def _call_json_completion(*, system_prompt: str, user_content: str) -> dic
 
         try:
             response = await client.chat.completions.create(
-                model="gpt-4.1",
+                model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
@@ -462,7 +716,6 @@ async def _call_json_completion(*, system_prompt: str, user_content: str) -> dic
                 raise ValueError("Empty response from OpenAI")
 
             return json.loads(text)
-
         except APIStatusError as exc:
             if exc.status_code not in (429, 503):
                 raise
@@ -475,51 +728,1066 @@ async def _call_json_completion(*, system_prompt: str, user_content: str) -> dic
                 )
                 raise
 
-    raise RuntimeError("Unreachable")  # mypy safety
+    raise RuntimeError("Unreachable")
 
 
-def _parse_full_study_plan(parsed: dict) -> StudyPlan:
-    if "studyPlan" in parsed:
-        parsed = parsed["studyPlan"]
+def _extract_source_sections(markdown_content: str) -> list[SourceSection]:
+    sections: list[SourceSection] = []
+    seen_markers: set[str] = set()
 
-    # Ensure topics list exists
-    if "topics" not in parsed:
-        # Extract unique topics from chapters in order
-        chapters = parsed.get("chapters", [])
-        seen = set()
-        topics = []
-        for ch in chapters:
-            t = ch.get("topic", "Algemeen")
-            if t not in seen:
-                seen.add(t)
-                topics.append(t)
-        parsed["topics"] = topics
+    for index, block in enumerate(_iter_semantic_blocks(markdown_content), start=1):
+        block = block.strip()
+        if not block:
+            continue
 
-    # Migrate legacy week-based format
-    for ch in parsed.get("chapters", []):
-        if "topic" not in ch:
-            ch["topic"] = "Algemeen"
-        if "week" in ch:
-            del ch["week"]
+        headers = [match.strip() for match in _HEADING_RE.findall(block)]
+        first_sentence = _extract_first_sentence(block)
+        markers = _extract_marker_keywords(block)
+        table_headers = _extract_table_headers(block)
+        start_marker = _make_unique_marker(
+            headers[0] if headers else first_sentence or f"Sectie {index}",
+            seen_markers,
+        )
+        seen_markers.add(start_marker)
 
-    if "totalWeeks" in parsed:
-        del parsed["totalWeeks"]
+        sections.append(
+            SourceSection(
+                index=index,
+                start_marker=start_marker,
+                content=block,
+                headers=headers,
+                first_sentence=first_sentence,
+                markers=markers,
+                table_headers=table_headers,
+            )
+        )
 
-    return StudyPlan.model_validate(parsed)
+    return sections
 
 
-def _parse_chunk_plan(parsed: dict) -> list[Chapter]:
-    if "studyPlan" in parsed:
-        parsed = parsed["studyPlan"]
+def _extract_first_sentence(block: str) -> str:
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("|") or set(line) <= {"|", "-", ":", " "}:
+            continue
 
-    # Ensure topic field exists on each chapter
-    for ch in parsed.get("chapters", []):
-        if "topic" not in ch:
-            ch["topic"] = "Algemeen"
-        if "week" in ch:
-            del ch["week"]
+        sentence_match = _SENTENCE_RE.match(line)
+        if sentence_match:
+            return sentence_match.group(1).strip()[:180]
+        return line[:180]
 
-    return ChunkStudyPlan.model_validate(parsed).chapters
+    plain = re.sub(r"\s+", " ", block).strip()
+    return plain[:180]
+
+
+def _extract_marker_keywords(block: str) -> list[str]:
+    markers: list[str] = []
+    content_upper = block.upper()
+
+    if "OEFENING" in content_upper:
+        markers.append("OEFENING")
+    if "DEFINITIE" in content_upper:
+        markers.append("DEFINITIE")
+    if "VOORBEELD" in content_upper:
+        markers.append("VOORBEELD")
+    if _FORMULA_RE.search(block):
+        markers.append("FORMULE")
+    if _extract_table_headers(block):
+        markers.append("TABEL")
+
+    return markers
+
+
+def _extract_table_headers(block: str) -> list[str]:
+    lines = [line.strip() for line in block.splitlines()]
+    for index, line in enumerate(lines[:-1]):
+        next_line = lines[index + 1]
+        if "|" not in line or "|" not in next_line:
+            continue
+        if not re.fullmatch(r"[\s|\-:]+", next_line):
+            continue
+
+        headers = [part.strip() for part in line.strip("|").split("|")]
+        return [header for header in headers if header]
+    return []
+
+
+def _make_unique_marker(marker: str, seen: set[str]) -> str:
+    normalized = re.sub(r"\s+", " ", marker).strip()[:120] or "Sectie"
+    if normalized not in seen:
+        return normalized
+
+    suffix = 2
+    while f"{normalized} [{suffix}]" in seen:
+        suffix += 1
+    return f"{normalized} [{suffix}]"
+
+
+def _normalize_structure_analysis(
+    structure_analysis: StructureAnalysis,
+    source_sections: list[SourceSection],
+    doc_type_hint: str,
+) -> StructureAnalysis:
+    if len(structure_analysis.sections) != len(source_sections):
+        raise ValueError("Structure analysis returned a mismatched number of sections.")
+
+    valid_markers = {section.start_marker for section in source_sections}
+    by_marker: dict[str, SectionAnalysis] = {}
+
+    for section in structure_analysis.sections:
+        if section.start_marker not in valid_markers:
+            raise ValueError(f"Unknown section marker returned by analysis: {section.start_marker}")
+        if section.start_marker in by_marker:
+            raise ValueError(f"Duplicate section marker returned by analysis: {section.start_marker}")
+        by_marker[section.start_marker] = section
+
+    normalized_sections: list[SectionAnalysis] = []
+    for source_section in source_sections:
+        analyzed = by_marker[source_section.start_marker]
+        normalized_sections.append(
+            SectionAnalysis(
+                start_marker=source_section.start_marker,
+                section_type=_normalize_section_type(
+                    analyzed.section_type or _guess_section_type(source_section)
+                ),
+                suggested_topic=(
+                    analyzed.suggested_topic.strip()
+                    or _default_topic_for_section(source_section, doc_type_hint)
+                ),
+                suggested_chapter_title=(
+                    analyzed.suggested_chapter_title.strip()
+                    or _default_chapter_title(source_section, doc_type_hint)
+                ),
+                related_sections=[
+                    marker
+                    for marker in _unique_strings(analyzed.related_sections)
+                    if marker in valid_markers and marker != source_section.start_marker
+                ],
+            )
+        )
+
+    normalized_topics = _merge_topics_with_reference_last(
+        structure_analysis.suggested_topics,
+        [{"topic": section.suggested_topic} for section in normalized_sections],
+    )
+    normalized_doc_type = (structure_analysis.document_type or doc_type_hint or "mixed").strip()
+
+    return StructureAnalysis(
+        sections=normalized_sections,
+        suggested_topics=normalized_topics,
+        document_type=normalized_doc_type,
+    )
+
+
+def _fallback_structure_analysis(
+    source_sections: list[SourceSection],
+    doc_type_hint: str,
+) -> StructureAnalysis:
+    sections: list[SectionAnalysis] = []
+    for section in source_sections:
+        fallback_topic = _default_topic_for_section(section, doc_type_hint)
+        fallback_title = _default_chapter_title(section, doc_type_hint)
+        sections.append(
+            SectionAnalysis(
+                start_marker=section.start_marker,
+                section_type=_guess_section_type(section),
+                suggested_topic=fallback_topic,
+                suggested_chapter_title=fallback_title,
+                related_sections=[],
+            )
+        )
+
+    return StructureAnalysis(
+        sections=sections,
+        suggested_topics=_merge_topics_with_reference_last(
+            [item.suggested_topic for item in sections]
+        ),
+        document_type=(doc_type_hint or "mixed").strip(),
+    )
+
+
+def _normalize_section_type(section_type: str) -> str:
+    normalized = section_type.strip().lower()
+    aliases = {
+        "oefening": "exercise",
+        "exercise": "exercise",
+        "definition": "definition",
+        "definitie": "definition",
+        "voorbeeld": "example",
+        "example": "example",
+        "formula": "formula",
+        "formule": "formula",
+        "theory": "theory",
+        "theorie": "theory",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if not _NORMALIZE_SECTION_RE.fullmatch(normalized):
+        return "theory"
+    return normalized
+
+
+def _guess_section_type(section: SourceSection) -> str:
+    marker_set = set(section.markers)
+    if "FORMULE" in marker_set:
+        return "formula"
+    if "OEFENING" in marker_set:
+        return "exercise"
+    if "DEFINITIE" in marker_set:
+        return "definition"
+    if "VOORBEELD" in marker_set:
+        return "example"
+    return "theory"
+
+
+def _default_topic_for_section(section: SourceSection, doc_type_hint: str) -> str:
+    if doc_type_hint == "formula_sheet":
+        return REFERENCE_TOPIC
+    if section.headers:
+        return section.headers[0][:80]
+    return "Algemeen"
+
+
+def _default_chapter_title(section: SourceSection, doc_type_hint: str) -> str:
+    if doc_type_hint == "formula_sheet":
+        return "Formuleoverzicht"
+    if section.headers:
+        return section.headers[0][:120]
+    return section.start_marker[:120]
+
+
+def _build_chapter_plans(
+    source_sections: list[SourceSection],
+    structure_analysis: StructureAnalysis,
+) -> list[ChapterPlan]:
+    plans: list[ChapterPlan] = []
+    current_sections: list[SourceSection] = []
+    current_related: list[str] = []
+    current_types: list[str] = []
+    current_topic = ""
+    current_title = ""
+
+    for source_section, analyzed_section in zip(
+        source_sections,
+        structure_analysis.sections,
+        strict=True,
+    ):
+        topic = analyzed_section.suggested_topic.strip() or "Algemeen"
+        title = analyzed_section.suggested_chapter_title.strip() or source_section.start_marker
+
+        if not current_sections:
+            current_sections = [source_section]
+            current_related = list(analyzed_section.related_sections)
+            current_types = [analyzed_section.section_type]
+            current_topic = topic
+            current_title = title
+            continue
+
+        if topic == current_topic and title == current_title:
+            current_sections.append(source_section)
+            current_related.extend(analyzed_section.related_sections)
+            current_types.append(analyzed_section.section_type)
+            continue
+
+        plans.append(
+            ChapterPlan(
+                index=len(plans) + 1,
+                title=current_title,
+                topic=current_topic,
+                source_sections=current_sections,
+                related_sections=_unique_strings(current_related),
+                section_types=_unique_strings(current_types),
+            )
+        )
+
+        current_sections = [source_section]
+        current_related = list(analyzed_section.related_sections)
+        current_types = [analyzed_section.section_type]
+        current_topic = topic
+        current_title = title
+
+    if current_sections:
+        plans.append(
+            ChapterPlan(
+                index=len(plans) + 1,
+                title=current_title,
+                topic=current_topic,
+                source_sections=current_sections,
+                related_sections=_unique_strings(current_related),
+                section_types=_unique_strings(current_types),
+            )
+        )
+
+    return plans
+
+
+def _compose_chapter_content(chapter_plan: ChapterPlan) -> str:
+    return "\n\n".join(
+        section.content.strip()
+        for section in chapter_plan.source_sections
+        if section.content.strip()
+    ).strip()
+
+
+def _validate_plan_metadata(metadata: PlanMetadata, *, chapter_count: int) -> None:
+    if len(metadata.summaries) != chapter_count:
+        raise ValueError("Metadata returned a mismatched number of summaries.")
+    if len(metadata.prerequisites) != chapter_count:
+        raise ValueError("Metadata returned a mismatched number of prerequisite lists.")
+
+
+def _normalize_plan_metadata(
+    metadata: PlanMetadata,
+    chapters: list[PreservedChapter],
+) -> PlanMetadata:
+    summaries = [
+        summary.strip() or f"Dit hoofdstuk behandelt {chapter.title.lower()}."
+        for summary, chapter in zip(metadata.summaries, chapters, strict=True)
+    ]
+    prerequisites = [
+        [item.strip() for item in items if item.strip()]
+        for items in metadata.prerequisites
+    ]
+
+    master_study_map = metadata.master_study_map.strip()
+    if not master_study_map:
+        master_study_map = _build_master_study_map(
+            _temporary_chapters(chapters, summaries),
+            prerequisites=prerequisites,
+        )
+
+    gpt_system_instructions = (
+        metadata.gpt_system_instructions.strip() or DEFAULT_GPT_SYSTEM_INSTRUCTIONS
+    )
+    course_metadata = _normalize_course_metadata(metadata.course_metadata)
+
+    return PlanMetadata(
+        summaries=summaries,
+        prerequisites=prerequisites,
+        master_study_map=master_study_map,
+        gpt_system_instructions=gpt_system_instructions,
+        course_metadata=course_metadata,
+    )
+
+
+def _fallback_plan_metadata(chapters: list[PreservedChapter]) -> PlanMetadata:
+    summaries = [
+        (
+            f"Dit hoofdstuk behandelt {chapter.title.lower()}. "
+            "Gebruik de knowledge base als primaire bron om de stof interactief te oefenen."
+        )
+        for chapter in chapters
+    ]
+    prerequisites = [
+        [] if index == 0 else [chapters[index - 1].title]
+        for index in range(len(chapters))
+    ]
+    master_study_map = _build_master_study_map(
+        _temporary_chapters(chapters, summaries),
+        prerequisites=prerequisites,
+    )
+    return PlanMetadata(
+        summaries=summaries,
+        prerequisites=prerequisites,
+        master_study_map=master_study_map,
+        gpt_system_instructions=DEFAULT_GPT_SYSTEM_INSTRUCTIONS,
+        course_metadata=_fallback_course_metadata_from_preserved_chapters(chapters),
+    )
+
+
+def _normalize_course_metadata(course_metadata: CourseMetadata | None) -> CourseMetadata:
+    metadata = course_metadata or CourseMetadata()
+    primary_language = (metadata.primary_language or "nl").strip().lower() or "nl"
+    if primary_language not in _LANGUAGE_CODE_ALLOWLIST:
+        primary_language = "nl"
+
+    exercise_types = [
+        normalized
+        for raw in metadata.exercise_types
+        for normalized in [_normalize_exercise_type(raw)]
+        if normalized
+    ]
+
+    detected_tools = [
+        canonical
+        for raw in metadata.detected_tools
+        for canonical in [_normalize_tool_name(raw)]
+        if canonical
+    ]
+
+    difficulty_keywords = [
+        keyword
+        for raw in metadata.difficulty_keywords
+        for keyword in [_normalize_difficulty_keyword(raw)]
+        if keyword
+    ]
+
+    total_exercises = max(int(metadata.total_exercises or 0), 0)
+
+    return CourseMetadata(
+        has_formulas=bool(metadata.has_formulas),
+        has_exercises=bool(metadata.has_exercises or total_exercises > 0),
+        has_code=bool(metadata.has_code),
+        primary_language=primary_language,
+        exercise_types=_unique_strings(exercise_types),
+        total_exercises=total_exercises,
+        detected_tools=_unique_strings(detected_tools),
+        difficulty_keywords=_unique_strings(difficulty_keywords),
+    )
+
+
+def _merge_course_metadata(
+    primary: CourseMetadata | None,
+    fallback: CourseMetadata | None,
+) -> CourseMetadata:
+    primary_normalized = _normalize_course_metadata(primary) if primary is not None else None
+    fallback_normalized = _normalize_course_metadata(fallback)
+    primary_data = primary_normalized or CourseMetadata()
+
+    primary_language = fallback_normalized.primary_language
+    if primary_normalized is not None and (
+        primary_normalized.primary_language != "nl"
+        or fallback_normalized.primary_language == "nl"
+    ):
+        primary_language = primary_normalized.primary_language
+
+    return CourseMetadata(
+        has_formulas=primary_data.has_formulas or fallback_normalized.has_formulas,
+        has_exercises=primary_data.has_exercises or fallback_normalized.has_exercises,
+        has_code=primary_data.has_code or fallback_normalized.has_code,
+        primary_language=primary_language,
+        exercise_types=_unique_strings(
+            [*primary_data.exercise_types, *fallback_normalized.exercise_types]
+        ),
+        total_exercises=max(
+            primary_data.total_exercises,
+            fallback_normalized.total_exercises,
+        ),
+        detected_tools=_unique_strings(
+            [*primary_data.detected_tools, *fallback_normalized.detected_tools]
+        ),
+        difficulty_keywords=_unique_strings(
+            [*primary_data.difficulty_keywords, *fallback_normalized.difficulty_keywords]
+        ),
+    )
+
+
+def _fallback_course_metadata_from_preserved_chapters(
+    chapters: list[PreservedChapter],
+) -> CourseMetadata:
+    chapter_records = [
+        {
+            "title": chapter.title,
+            "topic": chapter.topic,
+            "content": chapter.content,
+            "section_types": chapter.section_types,
+        }
+        for chapter in chapters
+    ]
+    return _fallback_course_metadata_from_chapter_records(chapter_records)
+
+
+def _fallback_course_metadata_from_final_chapters(
+    chapters: list[Chapter],
+) -> CourseMetadata:
+    chapter_records = [
+        {
+            "title": chapter.title,
+            "topic": chapter.topic,
+            "content": chapter.content,
+            "section_types": [],
+        }
+        for chapter in chapters
+    ]
+    return _fallback_course_metadata_from_chapter_records(chapter_records)
+
+
+def _fallback_course_metadata_from_chapter_records(
+    chapter_records: list[dict[str, Any]],
+) -> CourseMetadata:
+    combined_text = "\n\n".join(
+        f"{record['title']}\n{record['topic']}\n{record['content']}".strip()
+        for record in chapter_records
+    )
+    total_exercises = sum(_count_exercises(record["content"]) for record in chapter_records)
+    has_formulas = any(
+        _has_formula_markers(record["content"]) or "formula" in record.get("section_types", [])
+        for record in chapter_records
+    )
+    has_code = any(_has_code_markers(record["content"]) for record in chapter_records)
+    exercise_types = _detect_exercise_types(combined_text)
+    detected_tools = _detect_tools(combined_text)
+    difficulty_keywords = _detect_difficulty_keywords(combined_text)
+
+    return CourseMetadata(
+        has_formulas=has_formulas,
+        has_exercises=total_exercises > 0,
+        has_code=has_code,
+        primary_language=_detect_primary_language(combined_text),
+        exercise_types=exercise_types,
+        total_exercises=total_exercises,
+        detected_tools=detected_tools,
+        difficulty_keywords=difficulty_keywords,
+    )
+
+
+def _has_formula_markers(content: str) -> bool:
+    signals = ("$$", "\\mu", "\\sigma", "\\int", "\\sum")
+    return any(signal in content for signal in signals) or _FORMULA_RE.search(content) is not None
+
+
+def _has_code_markers(content: str) -> bool:
+    return bool(_CODE_FENCE_RE.search(content) or _INLINE_CODE_SIGNAL_RE.search(content))
+
+
+def _extract_course_sample_markers(content: str) -> list[str]:
+    markers: list[str] = []
+    markers.extend([heading.strip() for heading in _HEADING_RE.findall(content)[:4]])
+
+    lowered = content.lower()
+    if "meerkeuze" in lowered:
+        markers.append("meerkeuze")
+    if _MULTIPLE_CHOICE_RE.search(content):
+        markers.append("A/B/C/D opties")
+    if "bereken" in lowered:
+        markers.append("bereken")
+    if "oefening" in lowered:
+        markers.append("oefening")
+    if _has_formula_markers(content):
+        markers.append("latex-formules")
+    if _has_code_markers(content):
+        markers.append("codevoorbeeld")
+
+    tool_matches = _detect_tools(content)
+    markers.extend(tool_matches[:3])
+    return _unique_strings(markers)[:8]
+
+
+def _normalize_exercise_type(raw_value: str) -> str | None:
+    normalized = raw_value.strip().lower()
+    aliases = {
+        "multiple choice": "meerkeuze",
+        "mcq": "meerkeuze",
+        "meerkeuzevraag": "meerkeuze",
+        "open vraag": "open",
+        "open vragen": "open",
+        "calculation": "berekening",
+        "rekenvraag": "berekening",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in _EXERCISE_TYPE_ALLOWLIST else None
+
+
+def _normalize_tool_name(raw_value: str) -> str | None:
+    normalized = raw_value.strip().lower()
+    return _TOOL_CANONICAL_MAP.get(normalized)
+
+
+def _normalize_difficulty_keyword(raw_value: str) -> str | None:
+    normalized = raw_value.strip().lower()
+    return normalized if normalized in _DIFFICULTY_KEYWORDS else None
+
+
+def _detect_primary_language(text: str) -> str:
+    normalized = _normalize_markdown_text(text)
+    tokens = normalized.split()
+    dutch_score = sum(1 for token in tokens if token in _DUTCH_MARKERS)
+    english_score = sum(1 for token in tokens if token in _ENGLISH_MARKERS)
+    return "en" if english_score > dutch_score else "nl"
+
+
+def _detect_exercise_types(text: str) -> list[str]:
+    normalized = text.lower()
+    exercise_types: list[str] = []
+
+    if "meerkeuze" in normalized or len(_MULTIPLE_CHOICE_RE.findall(text)) >= 2:
+        exercise_types.append("meerkeuze")
+    if any(keyword in normalized for keyword in ("bereken", "werk uit", "uitwerking", "calculate")):
+        exercise_types.append("berekening")
+    if any(keyword in normalized for keyword in ("verklaar", "beschrijf", "licht toe", "toon aan", "open vraag")):
+        exercise_types.append("open")
+    if _count_exercises(text) > 0 and not exercise_types:
+        exercise_types.append("open")
+
+    return _unique_strings(exercise_types)
+
+
+def _detect_tools(text: str) -> list[str]:
+    lowered = text.lower()
+    detected: list[str] = []
+
+    for needle, canonical in _TOOL_CANONICAL_MAP.items():
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(needle)}(?![A-Za-z0-9_])", lowered):
+            detected.append(canonical)
+
+    if "<-" in text or "library(" in lowered or "ggplot" in lowered or "lm(" in lowered:
+        detected.append("R")
+    if "import " in lowered or "def " in lowered:
+        detected.append("Python")
+
+    return _unique_strings(detected)
+
+
+def _detect_difficulty_keywords(text: str) -> list[str]:
+    lowered = _normalize_markdown_text(text)
+    return [
+        keyword
+        for keyword in _DIFFICULTY_KEYWORDS
+        if keyword in lowered
+    ]
+
+
+def _assemble_study_plan(
+    chapters: list[PreservedChapter],
+    metadata: PlanMetadata,
+) -> StudyPlan:
+    topics = _merge_topics_with_reference_last([chapter.topic for chapter in chapters])
+    final_chapters = _assign_final_chapter_ids(chapters, metadata.summaries, topics)
+    master_study_map = metadata.master_study_map.strip() or _build_master_study_map(
+        final_chapters,
+        prerequisites=metadata.prerequisites,
+    )
+
+    return StudyPlan(
+        chapters=final_chapters,
+        topics=topics,
+        masterStudyMap=master_study_map,
+        gptSystemInstructions=(
+            metadata.gpt_system_instructions.strip()
+            or DEFAULT_GPT_SYSTEM_INSTRUCTIONS
+        ),
+        courseMetadata=_merge_course_metadata(
+            metadata.course_metadata,
+            _fallback_course_metadata_from_final_chapters(final_chapters),
+        ),
+    )
+
+
+def _finalize_study_plan(
+    markdown_content: str,
+    chapters: list[PreservedChapter],
+    metadata: PlanMetadata,
+) -> StudyPlan:
+    plan = _assemble_study_plan(chapters, metadata)
+    verification_report = verify_content_preservation(markdown_content, plan.chapters)
+
+    if verification_report.status == "CRITICAL":
+        recovery_chapters = _recover_missing_chapters(markdown_content, plan.chapters)
+        if recovery_chapters:
+            extended_metadata = _extend_metadata_for_recovery(metadata, len(recovery_chapters))
+            plan = _assemble_study_plan([*chapters, *recovery_chapters], extended_metadata)
+            verification_report = verify_content_preservation(markdown_content, plan.chapters)
+
+    plan.verificationReport = verification_report
+    plan.courseMetadata = _merge_course_metadata(
+        plan.courseMetadata,
+        _fallback_course_metadata_from_final_chapters(plan.chapters),
+    )
+    return plan
+
+
+def _extend_metadata_for_recovery(
+    metadata: PlanMetadata,
+    recovery_count: int,
+) -> PlanMetadata:
+    if recovery_count <= 0:
+        return metadata
+
+    return PlanMetadata(
+        summaries=[
+            *metadata.summaries,
+            *([DEFAULT_RECOVERY_SUMMARY] * recovery_count),
+        ],
+        prerequisites=[
+            *metadata.prerequisites,
+            *([[]] * recovery_count),
+        ],
+        master_study_map="",
+        gpt_system_instructions=metadata.gpt_system_instructions,
+        course_metadata=metadata.course_metadata,
+    )
+
+
+def _assign_final_chapter_ids(
+    chapters: list[PreservedChapter],
+    summaries: list[str],
+    topics: list[str],
+) -> list[Chapter]:
+    topic_index_map = {topic: index + 1 for index, topic in enumerate(topics)}
+    chapter_numbers_per_topic: dict[str, int] = {}
+    reference_formula_assigned = False
+    chapter_ids: list[str] = []
+    marker_to_chapter_id: dict[str, str] = {}
+
+    for chapter in chapters:
+        if _is_reference_formula_chapter(chapter) and not reference_formula_assigned:
+            chapter_id = "REF-FORMULAS"
+            reference_formula_assigned = True
+        else:
+            chapter_numbers_per_topic[chapter.topic] = (
+                chapter_numbers_per_topic.get(chapter.topic, 0) + 1
+            )
+            topic_num = topic_index_map.get(chapter.topic, 1)
+            chapter_id = f"T{topic_num}-C{chapter_numbers_per_topic[chapter.topic]}"
+
+        chapter_ids.append(chapter_id)
+        for marker in chapter.section_markers:
+            marker_to_chapter_id[marker] = chapter_id
+
+    final_chapters: list[Chapter] = []
+    for chapter, summary, chapter_id in zip(chapters, summaries, chapter_ids, strict=True):
+        final_chapters.append(
+            Chapter(
+                id=chapter_id,
+                title=chapter.title,
+                summary=summary,
+                topic=chapter.topic,
+                content=chapter.content,
+                key_concepts=chapter.key_concepts or _extract_core_concepts(chapter.content),
+                related_sections=_resolve_related_sections(
+                    chapter.related_section_markers,
+                    marker_to_chapter_id,
+                    current_chapter_id=chapter_id,
+                ),
+            )
+        )
+
+    return final_chapters
+
+
+def _is_reference_formula_chapter(chapter: PreservedChapter) -> bool:
+    return chapter.topic == REFERENCE_TOPIC and (
+        "formula" in chapter.section_types
+        or "formule" in chapter.title.lower()
+        or "formula" in chapter.title.lower()
+    )
+
+
+def _temporary_chapters(
+    chapters: list[PreservedChapter],
+    summaries: list[str],
+) -> list[Chapter]:
+    return [
+        Chapter(
+            id=f"TEMP-{index}",
+            title=chapter.title,
+            summary=summary,
+            topic=chapter.topic,
+            content=chapter.content,
+            key_concepts=chapter.key_concepts or _extract_core_concepts(chapter.content),
+            related_sections=[],
+        )
+        for index, (chapter, summary) in enumerate(zip(chapters, summaries, strict=True), start=1)
+    ]
+
+
+def _unwrap_payload(parsed: dict, *candidate_keys: str) -> dict:
+    for key in candidate_keys:
+        value = parsed.get(key)
+        if isinstance(value, dict):
+            return value
+    return parsed
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique_values: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_values.append(normalized)
+    return unique_values
+
+
+def _resolve_related_sections(
+    markers: list[str],
+    marker_to_chapter_id: dict[str, str],
+    *,
+    current_chapter_id: str,
+) -> list[str]:
+    related_ids: list[str] = []
+    seen: set[str] = set()
+
+    for marker in markers:
+        chapter_id = marker_to_chapter_id.get(marker)
+        if not chapter_id or chapter_id == current_chapter_id or chapter_id in seen:
+            continue
+        seen.add(chapter_id)
+        related_ids.append(chapter_id)
+
+    return related_ids
+
+
+def _recover_missing_chapters(
+    markdown_content: str,
+    generated_chapters: list[Chapter],
+) -> list[PreservedChapter]:
+    recovery_blocks = _build_recovery_blocks(markdown_content)
+    if not recovery_blocks:
+        return []
+
+    generated_profiles = _build_generated_chapter_profiles(generated_chapters)
+    missing_block_indices = {
+        block.index
+        for block in recovery_blocks
+        if not _is_recovery_block_covered(block, generated_profiles)
+    }
+
+    if not missing_block_indices:
+        return []
+
+    grouped_blocks: list[list[RecoveryBlock]] = []
+    current_group: list[RecoveryBlock] = []
+
+    for block in recovery_blocks:
+        if block.index in missing_block_indices:
+            current_group.append(block)
+            continue
+        if current_group:
+            grouped_blocks.append(current_group)
+            current_group = []
+
+    if current_group:
+        grouped_blocks.append(current_group)
+
+    recovery_chapters: list[PreservedChapter] = []
+    for group in grouped_blocks:
+        group_content = "\n\n".join(block.content.strip() for block in group if block.content.strip()).strip()
+        if not group_content:
+            continue
+
+        base_title = _select_recovery_group_title(group)
+        section_types: list[str] = []
+        if any(block.has_formula for block in group):
+            section_types.append("formula")
+        if any(block.has_exercise for block in group):
+            section_types.append("exercise")
+        if not section_types:
+            section_types.append("theory")
+
+        recovery_chapters.append(
+            PreservedChapter(
+                title=f"Herstel: {base_title}",
+                topic=RECOVERY_TOPIC,
+                content=group_content,
+                section_markers=[f"Recovery {group[0].index}-{group[-1].index}: {base_title}"],
+                section_types=section_types,
+                key_concepts=_extract_core_concepts(group_content),
+                related_section_markers=[],
+            )
+        )
+
+    return recovery_chapters
+
+
+def _build_recovery_blocks(markdown_content: str) -> list[RecoveryBlock]:
+    raw_chunks: list[str] = []
+    for document in markdown_content.split(DOCUMENT_SEPARATOR):
+        document = document.strip()
+        if not document:
+            continue
+        raw_chunks.extend(_split_document_into_recovery_chunks(document))
+
+    merged_chunks = _merge_small_recovery_chunks(raw_chunks, min_words=120)
+    recovery_blocks: list[RecoveryBlock] = []
+
+    for index, chunk in enumerate(merged_chunks, start=1):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+
+        normalized_chunk = _normalize_markdown_text(chunk)
+        if not normalized_chunk:
+            continue
+
+        title_marker = _extract_recovery_block_title(chunk, fallback=f"Sectie {index}")
+        keywords = set(_extract_signature_keywords(chunk, min_frequency=1)[:12])
+        if not keywords:
+            keywords = {
+                token
+                for token in _normalize_markdown_text(title_marker).split()
+                if len(token) > 4
+            }
+
+        recovery_blocks.append(
+            RecoveryBlock(
+                index=index,
+                title_marker=title_marker,
+                normalized_title=_normalize_markdown_text(title_marker),
+                content=chunk,
+                normalized_content=normalized_chunk,
+                words=len(normalized_chunk.split()),
+                keywords=keywords,
+                snippets=_extract_recovery_snippets(chunk),
+                has_exercise=_count_exercises(chunk) > 0,
+                has_table=_count_tables(chunk) > 0,
+                has_formula=_count_formulas(chunk) > 0,
+            )
+        )
+
+    return recovery_blocks
+
+
+def _split_document_into_recovery_chunks(document: str) -> list[str]:
+    heading_matches = list(re.finditer(r"(?m)^#{2,3}(?!#)\s+.+$", document))
+    if not heading_matches:
+        return [block.strip() for block in _iter_semantic_blocks(document) if block.strip()]
+
+    chunks: list[str] = []
+    positions = [match.start() for match in heading_matches] + [len(document)]
+
+    prefix = document[: positions[0]].strip()
+    if prefix:
+        chunks.append(prefix)
+
+    for start, end in zip(positions, positions[1:], strict=False):
+        chunk = document[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks
+
+
+def _merge_small_recovery_chunks(chunks: list[str], *, min_words: int) -> list[str]:
+    merged: list[str] = []
+    index = 0
+
+    while index < len(chunks):
+        current = chunks[index].strip()
+        index += 1
+
+        while _estimate_recovery_word_count(current) < min_words and index < len(chunks):
+            current = f"{current}\n\n{chunks[index].strip()}".strip()
+            index += 1
+
+        if _estimate_recovery_word_count(current) < min_words and merged:
+            merged[-1] = f"{merged[-1]}\n\n{current}".strip()
+            continue
+
+        merged.append(current)
+
+    return merged
+
+
+def _estimate_recovery_word_count(text: str) -> int:
+    return len(_normalize_markdown_text(text).split())
+
+
+def _extract_recovery_block_title(text: str, *, fallback: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^#{2,3}(?!#)\s+", stripped):
+            return re.sub(r"^#{2,3}(?!#)\s+", "", stripped).strip()[:120]
+    return fallback[:120]
+
+
+def _extract_recovery_snippets(text: str) -> list[str]:
+    candidates: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("|") or stripped.startswith("```"):
+            continue
+        for piece in re.split(r"(?<=[.!?])\s+", stripped):
+            normalized_piece = _normalize_markdown_text(piece)
+            if len(normalized_piece.split()) >= 6:
+                candidates.append(normalized_piece)
+
+    if not candidates:
+        normalized_text = _normalize_markdown_text(text)
+        if normalized_text:
+            words = normalized_text.split()
+            candidates.append(" ".join(words[:18]))
+
+    if not candidates:
+        return []
+
+    positions = [0, len(candidates) // 2, len(candidates) - 1]
+    snippets: list[str] = []
+    seen: set[str] = set()
+    for position in positions:
+        snippet = candidates[position].strip()
+        if not snippet or snippet in seen:
+            continue
+        seen.add(snippet)
+        snippets.append(snippet)
+
+    return snippets
+
+
+def _build_generated_chapter_profiles(
+    generated_chapters: list[Chapter],
+) -> list[GeneratedChapterProfile]:
+    profiles: list[GeneratedChapterProfile] = []
+    for chapter in generated_chapters:
+        combined_text = f"{chapter.title}\n{chapter.content}"
+        normalized_content = _normalize_markdown_text(combined_text)
+        if not normalized_content:
+            continue
+
+        keywords = set(_extract_signature_keywords(combined_text, min_frequency=1)[:12])
+        if not keywords:
+            keywords = {
+                token
+                for token in _normalize_markdown_text(chapter.title).split()
+                if len(token) > 4
+            }
+
+        profiles.append(
+            GeneratedChapterProfile(
+                chapter_id=chapter.id,
+                normalized_content=normalized_content,
+                keywords=keywords,
+                has_exercise=_count_exercises(chapter.content) > 0,
+                has_table=_count_tables(chapter.content) > 0,
+                has_formula=_count_formulas(chapter.content) > 0,
+            )
+        )
+
+    return profiles
+
+
+def _is_recovery_block_covered(
+    block: RecoveryBlock,
+    chapter_profiles: list[GeneratedChapterProfile],
+) -> bool:
+    for profile in chapter_profiles:
+        snippet_hits = sum(
+            1 for snippet in block.snippets if snippet and snippet in profile.normalized_content
+        )
+        snippet_ratio = snippet_hits / max(len(block.snippets), 1)
+        keyword_overlap = len(block.keywords & profile.keywords) / max(len(block.keywords), 1)
+        heading_bonus = (
+            1.0
+            if block.normalized_title and block.normalized_title in profile.normalized_content
+            else 0.0
+        )
+
+        structural_bonus = 0.0
+        if block.has_exercise and profile.has_exercise:
+            structural_bonus += 0.05
+        if block.has_table and profile.has_table:
+            structural_bonus += 0.05
+        if block.has_formula and profile.has_formula:
+            structural_bonus += 0.05
+
+        score = min(
+            1.0,
+            (0.5 * keyword_overlap) + (0.3 * snippet_ratio) + (0.2 * heading_bonus) + structural_bonus,
+        )
+        if snippet_hits >= 2 or score >= 0.55:
+            return True
+
+    return False
+
+
+def _select_recovery_group_title(group: list[RecoveryBlock]) -> str:
+    for block in group:
+        if block.title_marker and not block.title_marker.lower().startswith("sectie "):
+            return block.title_marker[:120]
+    return group[0].title_marker[:120]
 
 
 def _should_fallback_to_chunking(exc: Exception) -> bool:
@@ -558,7 +1826,10 @@ def _split_markdown_into_chunks(markdown_content: str) -> list[str]:
             chunks.extend(oversized_parts)
             continue
 
-        if current_parts and current_length + separator_length + block_length > TARGET_CHUNK_CHARS:
+        if (
+            current_parts
+            and current_length + separator_length + block_length > TARGET_CHUNK_CHARS
+        ):
             chunks.append("\n\n".join(current_parts))
             current_parts = [block]
             current_length = block_length
@@ -604,7 +1875,10 @@ def _split_large_block(block: str) -> list[str]:
     for paragraph in paragraphs:
         paragraph_length = len(paragraph)
         separator_length = 2 if current else 0
-        if current and current_length + separator_length + paragraph_length > TARGET_CHUNK_CHARS:
+        if (
+            current
+            and current_length + separator_length + paragraph_length > TARGET_CHUNK_CHARS
+        ):
             parts.append("\n\n".join(current))
             current = [paragraph]
             current_length = paragraph_length
@@ -648,151 +1922,60 @@ def _split_by_character_limit(text: str) -> list[str]:
     return [part for part in parts if part]
 
 
-async def _finalize_study_plan(
-    chapters: list[Chapter],
-    *,
-    gpt_system_instructions: str,
-    on_progress: ProgressCallback | None,
-) -> StudyPlan:
-    normalized = _normalize_chapters(chapters)
-
-    if not normalized:
-        raise ValueError("Geen bruikbare hoofdstukken om samen te voegen.")
-
-    if on_progress:
-        await on_progress(
-            "ai",
-            92,
-            "Hoofdstukken logisch per onderwerp groeperen...",
-        )
-
-    # Check if chapters already have meaningful topics
-    has_meaningful_topics = any(
-        ch.topic and ch.topic != "Algemeen" and ch.topic != "TEMP"
-        for ch in normalized
-    )
-
-    if has_meaningful_topics:
-        # Use the topics already assigned by GPT
-        topic_assignments = [ch.topic for ch in normalized]
-        seen = set()
-        topics = []
-        for t in topic_assignments:
-            if t not in seen:
-                seen.add(t)
-                topics.append(t)
-    else:
-        # Ask GPT to assign topics
-        topics, topic_assignments = await _choose_topic_assignments(normalized)
-
-    final_chapters = _apply_topic_assignments(normalized, topic_assignments, topics)
-
-    return StudyPlan(
-        chapters=final_chapters,
-        topics=topics,
-        masterStudyMap=_build_master_study_map(final_chapters),
-        gptSystemInstructions=gpt_system_instructions or DEFAULT_GPT_SYSTEM_INSTRUCTIONS,
-    )
-
-
-def _normalize_chapters(chapters: list[Chapter]) -> list[Chapter]:
-    return [
-        Chapter(
-            id="TEMP",
-            title=chapter.title.strip() or "Onbenoemd hoofdstuk",
-            summary=chapter.summary.strip() or "Samenvatting ontbreekt.",
-            topic=chapter.topic.strip() if chapter.topic else "Algemeen",
-            content=chapter.content.strip(),
-        )
-        for chapter in chapters
-        if chapter.content.strip()
-    ]
-
-
-async def _choose_topic_assignments(
-    chapters: list[Chapter],
-) -> tuple[list[str], list[str]]:
-    metadata = []
-    for index, chapter in enumerate(chapters, start=1):
-        metadata.append(
-            {
-                "index": index,
-                "title": chapter.title,
-                "summary": chapter.summary,
-                "concepts": _extract_core_concepts(chapter.content),
-            }
-        )
-
-    try:
-        parsed = await _call_json_completion(
-            system_prompt=TOPIC_PLANNER_PROMPT,
-            user_content=json.dumps(
-                {"chapters": metadata},
-                ensure_ascii=False,
-            ),
-        )
-        topic_plan = TopicPlan.model_validate(parsed)
-        _validate_topic_plan(topic_plan, chapter_count=len(chapters))
-        return topic_plan.topics, topic_plan.assignments
-    except Exception as exc:
-        logger.warning(
-            "Topic planning via OpenAI failed; assigning all to single topic: %s",
-            exc,
-        )
-        topics = ["Algemeen"]
-        assignments = ["Algemeen"] * len(chapters)
-        return topics, assignments
-
-
-def _validate_topic_plan(topic_plan: TopicPlan, *, chapter_count: int) -> None:
-    if len(topic_plan.assignments) != chapter_count:
-        raise ValueError("Topic planner returned a mismatched number of assignments.")
-    if not topic_plan.topics:
-        raise ValueError("Topic planner returned no topics.")
-
-    valid_topics = set(topic_plan.topics)
-    for assignment in topic_plan.assignments:
-        if assignment not in valid_topics:
-            raise ValueError(f"Topic planner assigned unknown topic: {assignment}")
-
-
-def _apply_topic_assignments(
-    chapters: list[Chapter],
-    assignments: list[str],
+def _merge_topics_with_reference_last(
     topics: list[str],
-) -> list[Chapter]:
-    topic_index_map = {t: i + 1 for i, t in enumerate(topics)}
-    chapter_numbers_per_topic: dict[str, int] = {}
-    final_chapters: list[Chapter] = []
+    chapters: list[Any] | None = None,
+) -> list[str]:
+    ordered_topics: list[str] = []
+    seen: set[str] = set()
 
-    for chapter, topic in zip(chapters, assignments, strict=True):
-        chapter_numbers_per_topic[topic] = chapter_numbers_per_topic.get(topic, 0) + 1
-        topic_num = topic_index_map.get(topic, 1)
-        final_chapters.append(
-            Chapter(
-                id=f"T{topic_num}-C{chapter_numbers_per_topic[topic]}",
-                title=chapter.title,
-                summary=chapter.summary,
-                topic=topic,
-                content=chapter.content,
-            )
-        )
+    def add_topic(topic: str | None) -> None:
+        normalized_topic = topic.strip() if topic else "Algemeen"
+        if normalized_topic in seen:
+            return
+        seen.add(normalized_topic)
+        ordered_topics.append(normalized_topic)
 
-    return final_chapters
+    for topic in topics:
+        add_topic(topic)
+
+    for chapter in chapters or []:
+        if isinstance(chapter, dict):
+            add_topic(chapter.get("topic"))
+        else:
+            add_topic(getattr(chapter, "topic", None))
+
+    regular_topics = [
+        topic
+        for topic in ordered_topics
+        if topic not in {RECOVERY_TOPIC, REFERENCE_TOPIC}
+    ]
+    recovery_topics = [topic for topic in ordered_topics if topic == RECOVERY_TOPIC]
+    reference_topics = [topic for topic in ordered_topics if topic == REFERENCE_TOPIC]
+    return regular_topics + recovery_topics + reference_topics
 
 
-def _build_master_study_map(chapters: list[Chapter]) -> str:
+def _build_master_study_map(
+    chapters: list[Chapter],
+    prerequisites: list[list[str]] | None = None,
+) -> str:
     lines = [
         "| Onderwerp | Hoofdstuk | Kernbegrippen | Oefeningen | Prerequisites |",
         "| --- | --- | --- | --- | --- |",
     ]
 
     for index, chapter in enumerate(chapters):
-        core_concepts = ", ".join(_extract_core_concepts(chapter.content)) or "-"
+        core_concepts = ", ".join(chapter.key_concepts or _extract_core_concepts(chapter.content)) or "-"
         exercises = chapter.content.count("OEFENING:")
-        prerequisites = chapters[index - 1].title if index > 0 else "-"
+        if prerequisites and index < len(prerequisites):
+            prerequisite_label = ", ".join(prerequisites[index]) or "-"
+        else:
+            prerequisite_label = chapters[index - 1].title if index > 0 else "-"
         lines.append(
-            f"| {chapter.topic} | {chapter.title} | {core_concepts} | {exercises} | {prerequisites} |"
+            (
+                f"| {chapter.topic} | {chapter.title} | {core_concepts} | "
+                f"{exercises} | {prerequisite_label} |"
+            )
         )
 
     return "\n".join(lines)

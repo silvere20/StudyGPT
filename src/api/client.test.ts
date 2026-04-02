@@ -23,11 +23,37 @@ describe('processDocuments', () => {
     const onError = vi.fn();
     const plan: StudyPlan = {
       chapters: [
-        { id: 'T1-C1', title: 'Intro', summary: 'Summary', topic: 'General', content: 'Body' },
+        {
+          id: 'T1-C1',
+          title: 'Intro',
+          summary: 'Summary',
+          topic: 'General',
+          content: 'Body',
+          key_concepts: ['concept'],
+          related_sections: [],
+        },
       ],
       topics: ['General'],
       masterStudyMap: '| topic | chapter |',
       gptSystemInstructions: 'Use the KB.',
+      verificationReport: {
+        status: 'WARNING',
+        word_ratio: 0.8,
+        missing_keywords: ['regression'],
+        exercise_count_original: 3,
+        exercise_count_generated: 2,
+        issues: ['1 oefening ontbreekt'],
+      },
+      courseMetadata: {
+        has_formulas: true,
+        has_exercises: true,
+        has_code: true,
+        primary_language: 'nl',
+        exercise_types: ['berekening'],
+        total_exercises: 3,
+        detected_tools: ['R'],
+        difficulty_keywords: ['regressie'],
+      },
     };
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(

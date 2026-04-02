@@ -9,10 +9,25 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main  # noqa: E402
-from models.schemas import Chapter, StudyPlan  # noqa: E402
+from models.schemas import Chapter, StudyPlan, VerificationReport  # noqa: E402
 
 
-def make_plan(title: str, content: str = "content") -> StudyPlan:
+def make_verification_report(status: str = "WARNING") -> VerificationReport:
+    return VerificationReport(
+        status=status,
+        word_ratio=0.82,
+        missing_keywords=["regressie"],
+        exercise_count_original=3,
+        exercise_count_generated=2,
+        issues=["1 oefening ontbreekt"],
+    )
+
+
+def make_plan(
+    title: str,
+    content: str = "content",
+    verification_report: VerificationReport | None = None,
+) -> StudyPlan:
     return StudyPlan(
         chapters=[
             Chapter(
@@ -26,6 +41,7 @@ def make_plan(title: str, content: str = "content") -> StudyPlan:
         topics=["Algemeen"],
         masterStudyMap="| onderwerp | chapter |",
         gptSystemInstructions="Use the KB.",
+        verificationReport=verification_report,
     )
 
 
@@ -50,7 +66,7 @@ def parse_sse_events(text: str) -> list[tuple[str, dict]]:
 
 
 def test_process_simple_returns_single_file_cache(monkeypatch):
-    cached_plan = make_plan("Cached")
+    cached_plan = make_plan("Cached", verification_report=make_verification_report())
 
     monkeypatch.setattr(main, "get_cached_result", lambda _: cached_plan)
     monkeypatch.setattr(main, "process_document", lambda *args, **kwargs: None)
@@ -66,6 +82,7 @@ def test_process_simple_returns_single_file_cache(monkeypatch):
     body = response.json()
     assert body["success"] is True
     assert body["plan"]["chapters"][0]["title"] == "Cached"
+    assert body["plan"]["verificationReport"]["status"] == "WARNING"
 
 
 def test_process_simple_multi_file_skips_cache_short_circuit(monkeypatch):
@@ -239,7 +256,7 @@ def test_health_includes_ocr_status(monkeypatch):
 
 def test_result_event_contains_file_order(monkeypatch):
     """result SSE event must include file_order matching the upload order."""
-    plan = make_plan("Order Test")
+    plan = make_plan("Order Test", verification_report=make_verification_report())
 
     async def fake_process_document(_path, filename, on_progress=None):
         return f"# {filename}"
@@ -269,6 +286,7 @@ def test_result_event_contains_file_order(monkeypatch):
 
     assert len(result_events) == 1
     assert result_events[0]["file_order"] == ["alpha.txt", "beta.txt"]
+    assert result_events[0]["verificationReport"]["status"] == "WARNING"
 
 
 def test_process_stream_emits_single_error_terminal_event(monkeypatch):

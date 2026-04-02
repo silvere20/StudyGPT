@@ -4,7 +4,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'sonner';
 import { checkHealth, type StudyPlan, type Chapter } from './api/client';
 import { cn, countWords, sanitizeFilename, stripMarkdownAndLatex } from './utils';
-import { buildBundles } from './utils/bundling';
+import { buildBundles, type Bundle, type BundleItem } from './utils/bundling';
+import { enrichForRetrieval } from './utils/retrieval';
 import type { HealthStatus, HealthSnapshot } from './types';
 import { useDocumentProcessor } from './hooks/useDocumentProcessor';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -325,8 +326,12 @@ export default function App() {
     toast.success('Master Study Map gedownload!');
   };
 
-  const orderedChapters = (targetPlan: StudyPlan): Chapter[] =>
-    topicOrder.flatMap(t => targetPlan.chapters.filter(c => c.topic === t));
+  const orderedChapters = (targetPlan: StudyPlan): Chapter[] => {
+    const ordered = topicOrder.flatMap(t => targetPlan.chapters.filter(c => c.topic === t));
+    const seen = new Set(ordered.map(chapter => chapter.id));
+    const remainder = targetPlan.chapters.filter(chapter => !seen.has(chapter.id));
+    return [...ordered, ...remainder];
+  };
 
   const copyAllPrompts = () => {
     if (!plan) return;
@@ -360,25 +365,30 @@ export default function App() {
     try {
       const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
-      const totalChapters = plan.chapters.length;
-      const totalTopics = topicOrder.length;
       const courseName = activeCourse.name;
-
-      const topicMap = new Map<string, Chapter[]>();
-      plan.chapters.forEach(ch => {
-        const existing = topicMap.get(ch.topic) ?? [];
-        existing.push(ch);
-        topicMap.set(ch.topic, existing);
-      });
-
-      const bundles = buildBundles(topicOrder);
+      const chaptersInOrder = orderedChapters(plan);
+      const totalChapters = chaptersInOrder.length;
+      const totalTopics = new Set(chaptersInOrder.map(chapter => chapter.topic)).size;
+      const chapterById = new Map(chaptersInOrder.map(chapter => [chapter.id, chapter]));
+      const bundles = buildBundles(chaptersInOrder);
       const bundleCount = bundles.length;
-      const zipFileCount = 2 + bundleCount;
+      const zipFileCount = 3 + bundleCount;
+      const fileNameByChapterId = buildChapterFileMap(bundles);
+      const sectionOffsets = buildSectionOffsetMap(bundles);
 
-      const injectAnchors = (content: string, topicIdx: number, chapterIdx: number): string => {
+      const injectAnchors = (content: string, chapterId: string, item: BundleItem): string => {
         let sectionIdx = 0;
+        const itemKey = getBundleItemKey(item);
+        const existingOffset = sectionOffsets.get(itemKey);
+        if (existingOffset !== undefined) {
+          sectionIdx = existingOffset;
+        }
+
         return content.split('\n').map(line => {
-          if (line.startsWith('### ')) { sectionIdx++; return `${line} (KB_SEC: T${topicIdx + 1}-C${chapterIdx + 1}-S${sectionIdx})`; }
+          if (line.startsWith('### ')) {
+            sectionIdx++;
+            return `${line} (KB_SEC: ${chapterId}-S${sectionIdx})`;
+          }
           return line;
         }).join('\n');
       };
@@ -388,43 +398,75 @@ export default function App() {
       zip.file("SYSTEM_INSTRUCTIONS.md", systemInstructions);
 
       // ── Master index (universal) ──
-      let indexContent = `# MASTER INDEX — ${courseName.toUpperCase()}\n\n## Overzicht\n- **Vak:** ${courseName}\n- **Totaal onderwerpen:** ${totalTopics}\n- **Totaal hoofdstukken:** ${totalChapters}\n- **Bestanden:** ${zipFileCount}\n\n## Onderwerpen & Hoofdstukken\n\n`;
-      topicOrder.forEach((topicName, topicIdx) => {
-        const chapters = topicMap.get(topicName) ?? [];
-        const bundleIdx = bundles.findIndex(b => b.topics.includes(topicName));
-        const safeLabel = sanitizeFilename(bundles[bundleIdx]?.label ?? topicName);
-        indexContent += `### ${String(topicIdx + 1).padStart(2, '0')}. ${topicName}\n**Bestand:** \`${safeLabel}.md\` | **Hoofdstukken:** ${chapters.length}\n\n`;
-        chapters.forEach((ch, chIdx) => {
-          indexContent += `- **${ch.id}** [KB_ID: T${topicIdx + 1}-C${chIdx + 1}] — ${ch.title}\n  *${ch.summary}*\n`;
-        });
-        indexContent += `\n`;
-      });
-      indexContent += `---\n\n## Master Study Map\n\n${plan.masterStudyMap}\n`;
+      const indexContent = buildMasterIndexContent(
+        courseName,
+        totalTopics,
+        totalChapters,
+        zipFileCount,
+        bundles,
+        chapterById,
+        plan.masterStudyMap,
+      );
       zip.file("00_MASTER_INDEX.md", indexContent);
 
       // ── Per-bundle content files (universal) ──
       bundles.forEach((bundle, bundleIdx) => {
-        const bundleTopics = bundle.topics;
-        const allBundleChapters = bundleTopics.flatMap(t => topicMap.get(t) ?? []);
         const safeLabel = sanitizeFilename(bundle.label);
+        const fileName = `${safeLabel}.md`;
+        const tableOfContents = bundle.items
+          .map((item, index) => `${index + 1}. [${item.chapterId}: ${item.title}](#${slugify(`${item.chapterId}-${item.title}`)})`)
+          .join('\n');
 
-        let topicContent = `---\ntopics: [${bundleTopics.map(t => `"${t}"`).join(', ')}]\nbundle_index: ${bundleIdx + 1}\ntotal_bundles: ${bundleCount}\nchapters: [${allBundleChapters.map(c => `"${c.id}"`).join(', ')}]\ndocument_type: "course_material"\n---\n\n# ${bundleTopics.length === 1 ? `Onderwerp ${bundleIdx + 1}: ${bundleTopics[0]}` : `Onderwerpen ${bundleIdx + 1}: ${bundleTopics.join(', ')}`}\n**${allBundleChapters.length} hoofdstuk${allBundleChapters.length !== 1 ? 'ken' : ''}** | Bestand ${bundleIdx + 1} van ${bundleCount}\n\n## Inhoudsopgave\n${allBundleChapters.map((ch, i) => `${i + 1}. [${ch.id}: ${ch.title}](#${ch.id.toLowerCase().replace(/[^a-z0-9]/g, '-')})`).join('\n')}\n\n---\n\n`;
+        const bundleSections = bundle.items.map((item) => {
+          const chapter = chapterById.get(item.chapterId);
+          const anchoredContent = injectAnchors(item.content, item.chapterId, item);
+          const enrichedContent = enrichForRetrieval(
+            anchoredContent,
+            item.chapterId,
+            item.topic,
+          );
+          const keyConcepts = formatInlineList(
+            uniqueStrings([...(chapter?.key_concepts ?? []), ...item.keyConcepts]),
+          );
+          const splitLabel = item.partCount > 1
+            ? `**Deel:** ${item.partIndex} van ${item.partCount}\n`
+            : '';
+          const summary = chapter?.summary ? `**Samenvatting:** ${chapter.summary}\n` : '';
 
-        bundleTopics.forEach(topicName => {
-          const topicIdx = topicOrder.indexOf(topicName);
-          const chapters = topicMap.get(topicName) ?? [];
-          if (bundleTopics.length > 1) topicContent += `# Onderwerp: ${topicName}\n\n`;
-          chapters.forEach((chapter, chIdx) => {
-            const globalIdx = plan.chapters.indexOf(chapter);
-            const prevChapter = globalIdx > 0 ? plan.chapters[globalIdx - 1] : null;
-            const nextChapter = globalIdx < plan.chapters.length - 1 ? plan.chapters[globalIdx + 1] : null;
-            const anchoredContent = injectAnchors(chapter.content, topicIdx, chIdx);
-            topicContent += `## ${chapter.id}: ${chapter.title}\nKB_ID: T${topicIdx + 1}-C${chIdx + 1}\n\n> **Navigatie**\n> ${prevChapter ? `Vorig: ${prevChapter.id} — ${prevChapter.title}` : 'Eerste hoofdstuk'}\n> ${nextChapter ? `Volgend: ${nextChapter.id} — ${nextChapter.title}` : 'Laatste hoofdstuk'}\n\n**Samenvatting:** ${chapter.summary}\n\n### Volledige Lesstof\n\n${anchoredContent}\n\n### Tutor Instructies\n- Toets de student op alle concepten en oefeningen in dit hoofdstuk.\n${nextChapter ? `- Bij beheersing: ga door naar **${nextChapter.id} — ${nextChapter.title}**.` : '- Dit is het laatste hoofdstuk. Maak een eindtoets van alle behandelde stof.'}\n- Verwijs bij vragen naar dit hoofdstuk: "${chapter.id}: ${chapter.title}" [KB_ID: T${topicIdx + 1}-C${chIdx + 1}].\n\n`;
-            if (chIdx < chapters.length - 1) topicContent += `---\n\n`;
-          });
-        });
+          return [
+            `## ${item.chapterId}: ${item.title}`,
+            `<a id="${slugify(`${item.chapterId}-${item.title}`)}"></a>`,
+            `KB_ID: ${item.chapterId}`,
+            '',
+            `**Onderwerp:** ${item.topic}`,
+            splitLabel.trimEnd(),
+            summary.trimEnd(),
+            `**Kernbegrippen:** ${keyConcepts}`,
+            '',
+            enrichedContent,
+          ].filter(Boolean).join('\n');
+        }).join('\n\n---\n\n');
 
-        zip.file(`${safeLabel}.md`, topicContent);
+        const bundleContent = [
+          buildBundleFrontmatter(bundle, bundleIdx + 1, bundleCount),
+          `# Smart Bundle ${bundleIdx + 1}: ${bundle.topics.join(', ')}`,
+          '',
+          buildRetrievalPreamble(bundle, chapterById),
+          '',
+          '## Inhoudsopgave',
+          tableOfContents || '- Geen hoofdstukken gevonden.',
+          '',
+          '---',
+          '',
+          bundleSections,
+          '',
+          '---',
+          '',
+          buildSeeAlsoSection(bundle, chapterById, fileNameByChapterId, fileName),
+          '',
+        ].join('\n');
+
+        zip.file(fileName, bundleContent);
       });
 
       // ── Platform-specific SNELSTARTGIDS ──
@@ -493,7 +535,7 @@ export default function App() {
   );
 
   const zipFileCount = useMemo(
-    () => (plan ? 3 + Math.min(topicOrder.length, 18) : 0), // +1 for SNELSTARTGIDS
+    () => (plan ? 3 + buildBundles(orderedChapters(plan)).length : 0),
     [plan, topicOrder],
   );
 
@@ -785,6 +827,196 @@ export default function App() {
   );
 }
 
+function buildChapterFileMap(bundles: Bundle[]): Map<string, string> {
+  const map = new Map<string, string>();
+
+  bundles.forEach((bundle) => {
+    const fileName = `${sanitizeFilename(bundle.label)}.md`;
+    bundle.chapterIds.forEach((chapterId) => {
+      if (!map.has(chapterId)) {
+        map.set(chapterId, fileName);
+      }
+    });
+  });
+
+  return map;
+}
+
+function buildSectionOffsetMap(bundles: Bundle[]): Map<string, number> {
+  const offsets = new Map<string, number>();
+  const headingCountsByChapterId = new Map<string, number>();
+
+  bundles.forEach((bundle) => {
+    bundle.items.forEach((item) => {
+      const itemKey = getBundleItemKey(item);
+      const currentOffset = headingCountsByChapterId.get(item.chapterId) ?? 0;
+      offsets.set(itemKey, currentOffset);
+      headingCountsByChapterId.set(
+        item.chapterId,
+        currentOffset + countLevelThreeHeadings(item.content),
+      );
+    });
+  });
+
+  return offsets;
+}
+
+function getBundleItemKey(item: BundleItem): string {
+  return `${item.chapterId}::${item.partIndex}/${item.partCount}`;
+}
+
+function countLevelThreeHeadings(content: string): number {
+  return (content.match(/^###\s+/gm) ?? []).length;
+}
+
+function buildMasterIndexContent(
+  courseName: string,
+  totalTopics: number,
+  totalChapters: number,
+  zipFileCount: number,
+  bundles: Bundle[],
+  chapterById: Map<string, Chapter>,
+  masterStudyMap: string,
+): string {
+  const lines = [
+    `# MASTER INDEX — ${courseName.toUpperCase()}`,
+    '',
+    '## Overzicht',
+    `- **Vak:** ${courseName}`,
+    `- **Totaal onderwerpen:** ${totalTopics}`,
+    `- **Totaal hoofdstukken:** ${totalChapters}`,
+    `- **Bestanden:** ${zipFileCount}`,
+    `- **Smart bundles:** ${bundles.length}`,
+    '',
+    '## Smart Bundles',
+    '',
+  ];
+
+  bundles.forEach((bundle, bundleIndex) => {
+    const fileName = `${sanitizeFilename(bundle.label)}.md`;
+    lines.push(`### ${String(bundleIndex + 1).padStart(2, '0')}. ${fileName}`);
+    lines.push(`- Onderwerpen: ${formatInlineList(bundle.topics)}`);
+    lines.push(`- Hoofdstukken: ${formatInlineList(bundle.chapterIds)}`);
+    lines.push(`- Kernbegrippen: ${formatInlineList(bundle.keyConcepts)}`);
+    lines.push(`- Zoekhints: ${formatInlineList(bundle.searchHints.slice(0, 12))}`);
+    lines.push('');
+
+    bundle.items.forEach((item) => {
+      const chapter = chapterById.get(item.chapterId);
+      lines.push(`- **${item.chapterId}** — ${item.title}`);
+      if (chapter?.summary) {
+        lines.push(`  *${chapter.summary}*`);
+      }
+    });
+
+    lines.push('');
+  });
+
+  lines.push('---', '', '## Master Study Map', '', masterStudyMap, '');
+  return lines.join('\n');
+}
+
+function buildBundleFrontmatter(
+  bundle: Bundle,
+  bundleIndex: number,
+  totalBundles: number,
+): string {
+  return [
+    '---',
+    yamlList('chapter_ids', bundle.chapterIds),
+    yamlList('topics', bundle.topics),
+    yamlList('key_concepts', bundle.keyConcepts),
+    yamlList('search_hints', bundle.searchHints),
+    `bundle_index: ${bundleIndex}`,
+    `total_bundles: ${totalBundles}`,
+    'document_type: "course_material"',
+    '---',
+  ].join('\n');
+}
+
+function buildRetrievalPreamble(
+  bundle: Bundle,
+  chapterById: Map<string, Chapter>,
+): string {
+  const chapterLabels = bundle.chapterIds
+    .map((chapterId) => {
+      const chapter = chapterById.get(chapterId);
+      return chapter ? `${chapterId} (${chapter.title})` : chapterId;
+    })
+    .join(', ');
+  const conceptLabel = bundle.keyConcepts.length > 0
+    ? bundle.keyConcepts.slice(0, 12).join(', ')
+    : 'de centrale begrippen uit deze hoofdstukken';
+
+  return `Dit smart-bundlebestand ondersteunt retrieval voor de onderwerpen ${formatInlineList(bundle.topics)}. Het bevat de hoofdstukken ${chapterLabels} en bundelt kernbegrippen zoals ${conceptLabel}. Gebruik deze termen bij file_search om definities, voorbeelden, oefeningen, tabellen en formules snel te vinden. De YAML frontmatter bovenaan geeft een compacte index met chapter_ids, topics, key_concepts en search_hints. Zoek bij detailvragen eerst op een chapter ID of kernbegrip en gebruik daarna de KB_ID- en KB_SEC-tags in de markdown om exact naar de juiste passage of sectie te verwijzen. Bij lange hoofdstukken markeren Deel-bestanden opeenvolgende stukken van hetzelfde hoofdstuk zodat ook gesplitste content volledig vindbaar blijft.`;
+}
+
+function buildSeeAlsoSection(
+  bundle: Bundle,
+  chapterById: Map<string, Chapter>,
+  fileNameByChapterId: Map<string, string>,
+  currentFileName: string,
+): string {
+  const chapterIdsInBundle = new Set(bundle.chapterIds);
+  const relatedIds = uniqueStrings(bundle.items.flatMap((item) => item.relatedSections))
+    .filter((chapterId) => !chapterIdsInBundle.has(chapterId))
+    .filter((chapterId) => {
+      const targetFile = fileNameByChapterId.get(chapterId);
+      return Boolean(targetFile) && targetFile !== currentFileName;
+    });
+
+  if (relatedIds.length === 0) {
+    return '## Zie ook\n- Geen externe cross-references buiten dit bundlebestand.';
+  }
+
+  return [
+    '## Zie ook',
+    ...relatedIds.map((chapterId) => {
+      const chapter = chapterById.get(chapterId);
+      const fileName = fileNameByChapterId.get(chapterId) ?? 'Onbekend bestand';
+      const title = chapter?.title ?? 'Onbekend hoofdstuk';
+      return `- ${chapterId} — ${title} → \`${fileName}\``;
+    }),
+  ].join('\n');
+}
+
+function yamlList(key: string, values: string[]): string {
+  if (values.length === 0) {
+    return `${key}: []`;
+  }
+
+  return [ `${key}:`, ...values.map((value) => `  - ${yamlQuote(value)}`) ].join('\n');
+}
+
+function yamlQuote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function formatInlineList(values: string[]): string {
+  return values.length > 0 ? values.join(', ') : '-';
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  values.forEach((value) => {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    result.push(normalized);
+  });
+
+  return result;
+}
+
 // ── Platform helpers ──
 function platformLabel(p: 'chatgpt' | 'gemini' | 'claude'): string {
   return { chatgpt: 'ChatGPT', gemini: 'Gemini', claude: 'Claude' }[p];
@@ -800,8 +1032,50 @@ function platformDescription(p: 'chatgpt' | 'gemini' | 'claude'): string {
   }[p];
 }
 
+function buildAdaptiveCourseInstructions(plan: StudyPlan): string {
+  const metadata = plan.courseMetadata;
+  if (!metadata) {
+    return '';
+  }
+
+  const sections: string[] = [];
+
+  if (metadata.has_formulas) {
+    sections.push(
+      '### Formules\n- Wanneer de student een formule-gerelateerde vraag stelt, toon ALTIJD de formule in LaTeX.\n- Leg elke variabele expliciet uit.\n- Geef daarnaast een concreet rekenvoorbeeld met echte getallen voordat je abstraheert.'
+    );
+  }
+
+  if (metadata.has_code) {
+    const toolsLabel = metadata.detected_tools.length > 0
+      ? metadata.detected_tools.join(', ')
+      : 'de zichtbare programmeertaal uit het studiemateriaal';
+    sections.push(
+      `### Code En Tools\n- Bij programmeervragen, toon altijd werkende code in ${toolsLabel} wanneer dat relevant is.\n- Leg de code regel voor regel uit.\n- Vraag de student eerst om de output of het effect van de code te voorspellen voordat je het antwoord onthult.`
+    );
+  }
+
+  if (metadata.exercise_types.includes('meerkeuze')) {
+    sections.push(
+      '### Meerkeuzevragen\n- Presenteer de antwoordopties stap voor stap.\n- Laat de student eerst redeneren voordat je het juiste antwoord geeft.\n- Leg vervolgens uit waarom elk fout antwoord fout is.'
+    );
+  }
+
+  if (metadata.exercise_types.includes('berekening')) {
+    sections.push(
+      '### Reken- En Uitwerkingsvragen\n- Laat de student EERST zelf proberen.\n- Geef eerst hints of tussenstappen als de student vastloopt.\n- Toon de volledige uitwerking pas na hun poging of wanneer zij daar expliciet om vragen.'
+    );
+  }
+
+  if (sections.length === 0) {
+    return '';
+  }
+
+  return `## VAKSPECIFIEKE RICHTLIJNEN\n${sections.join('\n\n')}`;
+}
+
 // ── System instructions per platform ──
-function buildSystemInstructions(
+export function buildSystemInstructions(
   platform: 'chatgpt' | 'gemini' | 'claude',
   courseName: string,
   totalChapters: number,
@@ -811,16 +1085,33 @@ function buildSystemInstructions(
   plan: StudyPlan
 ): string {
   const base = `# STUDIEPLAN: ${courseName.toUpperCase()}\n\n`;
-  const shared = `## KERNPRINCIPES\n1. **EVIDENCE-FIRST**: Elk feitelijk antwoord MOET beginnen met \`Volgens [KB_ID: T#-C#]:\` of \`Zie (KB_SEC: T#-C#-S#):\`.\n2. **ZERO HALLUCINATION**: Als een onderwerp NIET in de Knowledge Base staat, antwoord dan exact: "Dit staat niet in het studiemateriaal." Geef NOOIT antwoorden gebaseerd op eigen kennis voor cursusinhoud.\n3. **ACTIVE RECALL**: Stel de student vragen in plaats van direct antwoorden te geven. Gebruik de socratische methode.\n4. **PER ONDERWERP**: Werk onderwerp voor onderwerp — rond elk af voordat je naar het volgende gaat.\n5. **VOLLEDIGHEID**: Neem ALLE stof door — sla niets over.\n\n## EXAMEN MODUS\nWanneer de student begint met \`[EXAMEN]\`, genereer:\n1. Vijf open vragen over het gevraagde onderwerp\n2. Modelantwoorden voor elke vraag (met KB_SEC: verwijzingen)\n\n## STUDIEPLAN OVERZICHT\n${plan.masterStudyMap}\n\n${plan.gptSystemInstructions}`;
+  const adaptiveInstructions = buildAdaptiveCourseInstructions(plan);
+  const examModes = `## EXAMEN MODI\n### [OEFENEXAMEN]\n- Geef vragen één voor één.\n- Geef directe feedback na elk antwoord.\n- Bied hints en stapsgewijze coaching wanneer de student vastloopt.\n\n### [EXAMEN]\n- Geef alle vragen tegelijk als een echte toetssimulatie.\n- Houd feedback en modelantwoorden achter tot na de poging of op expliciet verzoek.\n- Gebruik KB_SEC-verwijzingen in het antwoordmodel.`;
+  const shared = [
+    '## KERNPRINCIPES',
+    '1. **EVIDENCE-FIRST**: Elk feitelijk antwoord MOET beginnen met `Volgens [KB_ID: T#-C#]:` of `Zie (KB_SEC: T#-C#-S#):`.',
+    '2. **ZERO HALLUCINATION**: Als een onderwerp NIET in de Knowledge Base staat, antwoord dan exact: "Dit staat niet in het studiemateriaal." Geef NOOIT antwoorden gebaseerd op eigen kennis voor cursusinhoud.',
+    '3. **ACTIVE RECALL**: Stel de student vragen in plaats van direct antwoorden te geven. Gebruik de socratische methode.',
+    '4. **SMART RETRIEVAL**: Lees altijd eerst de YAML frontmatter en retrieval preamble van het relevante bundlebestand voordat je inhoudelijk antwoordt.',
+    '5. **VOLLEDIGHEID**: Neem ALLE stof door — ook wanneer een lang hoofdstuk is opgesplitst in meerdere Deel-bestanden.',
+    '',
+    examModes,
+    adaptiveInstructions ? `\n${adaptiveInstructions}` : '',
+    '',
+    '## STUDIEPLAN OVERZICHT',
+    plan.masterStudyMap,
+    '',
+    plan.gptSystemInstructions,
+  ].filter(Boolean).join('\n');
 
   if (platform === 'chatgpt') {
-    return `${base}## JOUW IDENTITEIT\nJe bent een gespecialiseerde academische AI Tutor. Je hebt toegang tot een Knowledge Base met ${totalChapters} hoofdstukken verdeeld over ${totalTopics} onderwerpen (${zipFileCount} bestanden, geoptimaliseerd voor ChatGPT's 20-bestanden limiet).\n\n## RETRIEVAL STRATEGIE (file_search)\n1. Bij een nieuwe sessie: zoek \`00_MASTER_INDEX.md\` om de cursusstructuur te begrijpen.\n2. Bij een inhoudelijke vraag: zoek het relevante onderwerpbestand (\`Topic_XX_...\`).\n3. Bij een oefening: zoek op "OEFENING:" binnen het onderwerpbestand.\n4. Bij een definitie: zoek op "DEFINITIE:" binnen het onderwerpbestand.\n\n## BESTANDSSTRUCTUUR (${zipFileCount} bestanden)\n- \`SYSTEM_INSTRUCTIONS.md\` — Dit bestand\n- \`00_MASTER_INDEX.md\` — Volledige cursuskaart (raadpleeg EERST)\n- \`Topic_01_*.md\` t/m \`Topic_${String(bundleCount).padStart(2, '0')}_*.md\` — Eén bestand per onderwerp\n- \`SNELSTARTGIDS.md\` — Opzetinstructies\n\n${shared}`;
+    return `${base}## JOUW IDENTITEIT\nJe bent een gespecialiseerde academische AI Tutor. Je hebt toegang tot een Knowledge Base met ${totalChapters} hoofdstukken verdeeld over ${totalTopics} onderwerpen in ${bundleCount} smart bundles (${zipFileCount} bestanden totaal, geoptimaliseerd voor ChatGPT's 20-bestandenlimiet).\n\n## RETRIEVAL STRATEGIE (file_search)\n1. Begin altijd met \`00_MASTER_INDEX.md\` om de bundle-indeling en hoofdstuk-ID's te begrijpen.\n2. Zoek daarna het relevante \`Bundle_XX_*.md\` bestand en lees eerst de YAML frontmatter plus retrieval preamble.\n3. Gebruik \`chapter_ids\`, \`topics\`, \`key_concepts\` en \`search_hints\` om exact te bepalen welk bundlebestand relevant is.\n4. Zoek voor oefeningen op \`OEFENING:\`, voor definities op \`DEFINITIE:\`, voor voorbeelden op \`VOORBEELD:\`, en voor formules op zowel het kernbegrip als de LaTeX-notatie.\n5. Als een hoofdstuk in meerdere Deel-bestanden voorkomt, doorzoek alle delen voordat je concludeert dat informatie ontbreekt.\n\n## BESTANDSSTRUCTUUR (${zipFileCount} bestanden)\n- \`SYSTEM_INSTRUCTIONS.md\` — Dit bestand\n- \`00_MASTER_INDEX.md\` — Volledige cursuskaart en bundle-overzicht (raadpleeg EERST)\n- \`Bundle_01_*.md\` t/m \`Bundle_${String(bundleCount).padStart(2, '0')}_*.md\` — Smart bundles met frontmatter, retrieval preamble, lesstof en \`Zie ook\`\n- \`SNELSTARTGIDS.md\` — Opzetinstructies\n\n${shared}`;
   }
   if (platform === 'gemini') {
-    return `${base}## JOUW IDENTITEIT\nJe bent een academische Gem Tutor voor het vak "${courseName}". Je hebt toegang tot een Knowledge Base met ${totalChapters} hoofdstukken verdeeld over ${totalTopics} onderwerpen.\n\n## RETRIEVAL STRATEGIE (Gems)\n1. Raadpleeg \`00_MASTER_INDEX.md\` voor de structuur.\n2. Zoek het relevante onderwerpbestand voor inhoudelijke vragen.\n3. Gebruik de KB_SEC ankertags om exacte secties te citeren.\n4. Verwijs altijd naar het onderwerp en hoofdstuk bij je antwoord.\n\n## BESTANDSSTRUCTUUR\n- \`SYSTEM_INSTRUCTIONS.md\` — Dit bestand (plak dit als System Instruction)\n- \`00_MASTER_INDEX.md\` — Volledige cursuskaart\n- Onderwerpbestanden — Alle cursusinhoud\n- \`SNELSTARTGIDS.md\` — Opzetinstructies\n\n${shared}`;
+    return `${base}## JOUW IDENTITEIT\nJe bent een academische Gem Tutor voor het vak "${courseName}". Je hebt toegang tot een Knowledge Base met ${totalChapters} hoofdstukken verdeeld over ${totalTopics} onderwerpen in ${bundleCount} smart bundles.\n\n## RETRIEVAL STRATEGIE (Gems)\n1. Raadpleeg \`00_MASTER_INDEX.md\` voor de structuur en de bestandsindeling.\n2. Open daarna het relevante \`Bundle_XX_*.md\` bestand en lees eerst de frontmatter en retrieval preamble.\n3. Gebruik \`search_hints\`, \`key_concepts\` en \`chapter_ids\` als primaire zoektermen.\n4. Gebruik de KB_SEC ankertags om exacte secties te citeren.\n5. Verwijs altijd naar onderwerp, chapter ID en bestandsnaam bij je antwoord.\n\n## BESTANDSSTRUCTUUR\n- \`SYSTEM_INSTRUCTIONS.md\` — Dit bestand (plak dit als System Instruction)\n- \`00_MASTER_INDEX.md\` — Volledige cursuskaart en bundle-overzicht\n- Smart bundle-bestanden — Alle cursusinhoud met metadata-rijke frontmatter\n- \`SNELSTARTGIDS.md\` — Opzetinstructies\n\n${shared}`;
   }
   // claude
-  return `${base}## JOUW IDENTITEIT\nJe bent een academische Claude Project Tutor voor het vak "${courseName}". Je hebt toegang tot een Project Knowledge Base met ${totalChapters} hoofdstukken verdeeld over ${totalTopics} onderwerpen.\n\n## RETRIEVAL STRATEGIE (Project Knowledge)\n1. Raadpleeg \`00_MASTER_INDEX.md\` voor de volledige cursusstructuur.\n2. Citeer content met artefact-stijl verwijzingen: "[Zie: {onderwerp}, KB_ID: T#-C#]".\n3. Gebruik de KB_SEC ankertags voor sectieverwijzingen.\n4. Maak gebruik van Claude's lange contextvenster — je kunt meerdere bestanden tegelijk raadplegen.\n\n## BESTANDSSTRUCTUUR\n- \`SYSTEM_INSTRUCTIONS.md\` — Plak dit als Project Instructions\n- \`00_MASTER_INDEX.md\` — Volledige cursuskaart\n- Onderwerpbestanden — Alle cursusinhoud\n- \`SNELSTARTGIDS.md\` — Opzetinstructies\n\n${shared}`;
+  return `${base}## JOUW IDENTITEIT\nJe bent een academische Claude Project Tutor voor het vak "${courseName}". Je hebt toegang tot een Project Knowledge Base met ${totalChapters} hoofdstukken verdeeld over ${totalTopics} onderwerpen in ${bundleCount} smart bundles.\n\n## RETRIEVAL STRATEGIE (Project Knowledge)\n1. Raadpleeg \`00_MASTER_INDEX.md\` voor de volledige cursusstructuur en bundle-volgorde.\n2. Open vervolgens het relevante \`Bundle_XX_*.md\` bestand en lees eerst de frontmatter en retrieval preamble.\n3. Citeer content met verwijzingen zoals "[Zie: KB_ID T#-C#]" of "[Zie: KB_SEC T#-C#-S#]".\n4. Gebruik \`Zie ook\` om aangrenzende hoofdstukken of gerelateerde onderwerpen erbij te pakken.\n5. Maak gebruik van Claude's lange contextvenster om meerdere bundles tegelijk te combineren, vooral bij gesplitste hoofdstukken.\n\n## BESTANDSSTRUCTUUR\n- \`SYSTEM_INSTRUCTIONS.md\` — Plak dit als Project Instructions\n- \`00_MASTER_INDEX.md\` — Volledige cursuskaart en bundle-overzicht\n- Smart bundle-bestanden — Alle cursusinhoud met metadata, preambles en cross-links\n- \`SNELSTARTGIDS.md\` — Opzetinstructies\n\n${shared}`;
 }
 
 // ── Platform-specific SNELSTARTGIDS ──
@@ -830,11 +1121,11 @@ function buildSnelstartgids(
   fileCount: number
 ): string {
   if (platform === 'chatgpt') {
-    return `# SNELSTARTGIDS — ChatGPT Custom GPT\n\n## Vak: ${courseName}\n\n## Stap 1: Maak een Custom GPT\n1. Ga naar chatgpt.com → Explore GPTs → Create\n2. Klik op "Configure"\n\n## Stap 2: Plak de System Instructions\n1. Open \`SYSTEM_INSTRUCTIONS.md\` uit deze ZIP\n2. Kopieer de volledige inhoud\n3. Plak dit in het veld "Instructions"\n\n## Stap 3: Upload de Knowledge Base bestanden\n1. Klik op "Knowledge" → "Upload files"\n2. Upload alle ${fileCount} bestanden uit deze ZIP\n   (**Let op:** ChatGPT heeft een limiet van 20 bestanden — deze export is daar exact op afgestemd)\n\n## Stap 4: Sla op & begin met studeren\n1. Klik "Save" en geef je GPT een naam\n2. Begin het gesprek met: "Laten we beginnen met [onderwerp]"\n3. Typ \`[EXAMEN]\` gevolgd door een onderwerp voor een oefentoets\n\n## Tips\n- De tutor werkt het beste als je één onderwerp per sessie behandelt\n- Gebruik de socratische methode: de tutor stelt vragen, jij antwoordt\n- Vraag om herhaling als een concept niet duidelijk is\n`;
+    return `# SNELSTARTGIDS — ChatGPT Custom GPT\n\n## Vak: ${courseName}\n\n## Stap 1: Maak een Custom GPT\n1. Ga naar chatgpt.com → Explore GPTs → Create\n2. Klik op "Configure"\n\n## Stap 2: Plak de System Instructions\n1. Open \`SYSTEM_INSTRUCTIONS.md\` uit deze ZIP\n2. Kopieer de volledige inhoud\n3. Plak dit in het veld "Instructions"\n\n## Stap 3: Upload de Knowledge Base bestanden\n1. Klik op "Knowledge" → "Upload files"\n2. Upload alle ${fileCount} bestanden uit deze ZIP\n3. ChatGPT zit op een limiet van 20 bestanden; deze export gebruikt daarom smart bundles in plaats van één bestand per onderwerp\n\n## Stap 4: Gebruik de bundelstructuur goed\n1. Laat de GPT eerst \`00_MASTER_INDEX.md\` lezen\n2. Elk \`Bundle_XX_*.md\` bestand start met YAML frontmatter, gevolgd door een retrieval preamble\n3. Lange hoofdstukken kunnen als \`Deel 1\`, \`Deel 2\` enzovoort over meerdere bundlebestanden verdeeld zijn\n4. Onderaan elk bundlebestand staat \`Zie ook\` voor gerelateerde hoofdstukken in andere bestanden\n\n## Stap 5: Sla op & begin met studeren\n1. Klik "Save" en geef je GPT een naam\n2. Begin bijvoorbeeld met: "Laten we beginnen met hoofdstuk T1-C1" of "Zoek alle informatie over [kernbegrip]"\n3. Typ \`[EXAMEN]\` gevolgd door een onderwerp voor een oefentoets\n\n## Tips\n- Gebruik chapter IDs en kernbegrippen als zoektermen\n- Vraag de tutor expliciet om het relevante bundlebestand te noemen\n- Laat de tutor bij gesplitste hoofdstukken altijd alle delen controleren\n`;
   }
   if (platform === 'gemini') {
-    return `# SNELSTARTGIDS — Google Gemini Gem\n\n## Vak: ${courseName}\n\n## Stap 1: Maak een nieuwe Gem\n1. Ga naar gemini.google.com → Gem Manager → New Gem\n\n## Stap 2: Voeg de System Instruction toe\n1. Open \`SYSTEM_INSTRUCTIONS.md\` uit deze ZIP\n2. Kopieer de volledige inhoud\n3. Plak dit in het "Instructions" veld van de Gem\n\n## Stap 3: Upload de Knowledge Base bestanden\n1. Klik op "Knowledge" of "Files"\n2. Upload alle ${fileCount} bestanden uit deze ZIP\n\n## Stap 4: Sla op & begin met studeren\n1. Klik "Save" en geef je Gem een naam\n2. Begin het gesprek met: "Laten we beginnen met [onderwerp]"\n3. Typ \`[EXAMEN]\` gevolgd door een onderwerp voor een oefentoets\n\n## Tips\n- Gemini Gems zijn beschikbaar via Google One Advanced\n- De tutor is geoptimaliseerd voor Gemini's grounding capabilities\n`;
+    return `# SNELSTARTGIDS — Google Gemini Gem\n\n## Vak: ${courseName}\n\n## Stap 1: Maak een nieuwe Gem\n1. Ga naar gemini.google.com → Gem Manager → New Gem\n\n## Stap 2: Voeg de System Instruction toe\n1. Open \`SYSTEM_INSTRUCTIONS.md\` uit deze ZIP\n2. Kopieer de volledige inhoud\n3. Plak dit in het "Instructions" veld van de Gem\n\n## Stap 3: Upload de Knowledge Base bestanden\n1. Klik op "Knowledge" of "Files"\n2. Upload alle ${fileCount} bestanden uit deze ZIP\n\n## Stap 4: Begrijp de smart-bundle opbouw\n1. Start retrieval altijd via \`00_MASTER_INDEX.md\`\n2. Elk bundlebestand bevat YAML frontmatter met \`chapter_ids\`, \`topics\`, \`key_concepts\` en \`search_hints\`\n3. De retrieval preamble bovenaan geeft extra zoektermen voor Gemini\n4. Gebruik \`Zie ook\` om gerelateerde hoofdstukken in andere bestanden te volgen\n\n## Stap 5: Sla op & begin met studeren\n1. Klik "Save" en geef je Gem een naam\n2. Begin het gesprek met: "Laten we beginnen met hoofdstuk T1-C1"\n3. Typ \`[EXAMEN]\` gevolgd door een onderwerp voor een oefentoets\n\n## Tips\n- Zoek op chapter IDs of kernbegrippen voor de beste grounding\n- Controleer bij lange hoofdstukken ook de Deel-bestanden\n`;
   }
   // claude
-  return `# SNELSTARTGIDS — Claude Project\n\n## Vak: ${courseName}\n\n## Stap 1: Maak een nieuw Project\n1. Ga naar claude.ai → Projects → New Project\n2. Geef het project de naam "${courseName}"\n\n## Stap 2: Voeg de Project Instructions toe\n1. Open \`SYSTEM_INSTRUCTIONS.md\` uit deze ZIP\n2. Kopieer de volledige inhoud\n3. Plak dit in "Project Instructions"\n\n## Stap 3: Upload de Knowledge Base bestanden\n1. Klik op "Add Content" of het upload-icoon\n2. Upload alle ${fileCount} bestanden uit deze ZIP\n   (Claude Projects heeft geen strikte bestandslimiet)\n\n## Stap 4: Begin met studeren\n1. Open een nieuw gesprek binnen het project\n2. Begin met: "Laten we beginnen met [onderwerp]"\n3. Typ \`[EXAMEN]\` gevolgd door een onderwerp voor een oefentoets\n\n## Tips\n- Claude heeft een groot contextvenster — je kunt meerdere onderwerpen per sessie behandelen\n- Gebruik artefacten voor samenvattingen en schema's\n- De tutor kan automatisch alle bestanden tegelijk doorzoeken\n`;
+  return `# SNELSTARTGIDS — Claude Project\n\n## Vak: ${courseName}\n\n## Stap 1: Maak een nieuw Project\n1. Ga naar claude.ai → Projects → New Project\n2. Geef het project de naam "${courseName}"\n\n## Stap 2: Voeg de Project Instructions toe\n1. Open \`SYSTEM_INSTRUCTIONS.md\` uit deze ZIP\n2. Kopieer de volledige inhoud\n3. Plak dit in "Project Instructions"\n\n## Stap 3: Upload de Knowledge Base bestanden\n1. Klik op "Add Content" of het upload-icoon\n2. Upload alle ${fileCount} bestanden uit deze ZIP\n\n## Stap 4: Gebruik de smart bundles slim\n1. Open eerst \`00_MASTER_INDEX.md\` voor de bundlekaart\n2. Lees bij elk bundlebestand eerst de YAML frontmatter en retrieval preamble\n3. Gebruik \`Zie ook\` om context uit gerelateerde bundles erbij te pakken\n4. Houd rekening met Deel-bestanden wanneer een hoofdstuk is opgesplitst\n\n## Stap 5: Begin met studeren\n1. Open een nieuw gesprek binnen het project\n2. Begin met: "Laten we beginnen met hoofdstuk T1-C1" of "Zoek alles over [kernbegrip]"\n3. Typ \`[EXAMEN]\` gevolgd door een onderwerp voor een oefentoets\n\n## Tips\n- Claude kan meerdere bundles tegelijk vergelijken\n- Laat Claude expliciet chapter IDs en KB_SEC-verwijzingen citeren\n- Gebruik artefacten voor samenvattingen en schema's op basis van de bundlebestanden\n`;
 }

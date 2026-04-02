@@ -4,6 +4,28 @@ export interface Chapter {
   summary: string;
   topic: string;
   content: string;
+  key_concepts: string[];
+  related_sections: string[];
+}
+
+export interface VerificationReport {
+  status: 'OK' | 'WARNING' | 'CRITICAL';
+  word_ratio: number;
+  missing_keywords: string[];
+  exercise_count_original: number;
+  exercise_count_generated: number;
+  issues: string[];
+}
+
+export interface CourseMetadata {
+  has_formulas: boolean;
+  has_exercises: boolean;
+  has_code: boolean;
+  primary_language: string;
+  exercise_types: string[];
+  total_exercises: number;
+  detected_tools: string[];
+  difficulty_keywords: string[];
 }
 
 export interface StudyPlan {
@@ -11,6 +33,8 @@ export interface StudyPlan {
   topics: string[];
   masterStudyMap: string;
   gptSystemInstructions: string;
+  verificationReport?: VerificationReport | null;
+  courseMetadata?: CourseMetadata | null;
 }
 
 export interface ProgressUpdate {
