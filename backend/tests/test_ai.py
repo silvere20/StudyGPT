@@ -616,7 +616,9 @@ def test_split_markdown_into_chunks_respects_size_limits():
     chunks = ai._split_markdown_into_chunks(content)
 
     assert len(chunks) > 1
-    assert all(len(chunk) <= ai.HARD_CHUNK_CHARS for chunk in chunks)
+    # Context headers add ~100 chars per chunk; allow small overhead beyond HARD_CHUNK_CHARS
+    _CONTEXT_HEADER_OVERHEAD = 200
+    assert all(len(chunk) <= ai.HARD_CHUNK_CHARS + _CONTEXT_HEADER_OVERHEAD for chunk in chunks)
 
 
 def test_split_markdown_into_chunks_single_block_under_limit():
@@ -625,4 +627,30 @@ def test_split_markdown_into_chunks_single_block_under_limit():
     chunks = ai._split_markdown_into_chunks(content)
 
     assert len(chunks) == 1
-    assert chunks[0] == content.strip() or content.strip() in chunks[0]
+    # Each chunk is prefixed with a [CONTEXT: ...] header
+    assert chunks[0].startswith("[CONTEXT:")
+    assert content.strip() in chunks[0]
+
+
+def test_semantic_chunking_keeps_atomic_blocks_intact():
+    """Een OEFENING:-blok dat groter is dan TARGET_CHUNK_CHARS mag nooit worden gesplitst."""
+    long_exercise = "OEFENING: Bereken de integraal\n" + ("x " * (ai.TARGET_CHUNK_CHARS // 2 + 1000))
+
+    markdown_content = (
+        "# Hoofdstuk 1\n\nInleiding tot calculus.\n\n"
+        + long_exercise
+        + "\n\n# Hoofdstuk 2\n\nNa de oefening.\n"
+    )
+
+    result = ai._split_markdown_into_chunks(markdown_content)
+
+    # De oefening moet in precies één chunk zitten (is_atomic → nooit splitsen)
+    exercise_chunks = [c for c in result if "OEFENING:" in c]
+    assert len(exercise_chunks) == 1, "Atomic OEFENING:-blok mag niet over meerdere chunks verspreid zijn"
+
+    # De oefeningstekst moet volledig intact zijn
+    assert "Bereken de integraal" in exercise_chunks[0]
+
+    # Andere content mag normaal gechunkt zijn
+    assert any("Inleiding tot calculus" in c for c in result)
+    assert any("Na de oefening" in c for c in result)

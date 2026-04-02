@@ -47,6 +47,14 @@ DEFAULT_RECOVERY_SUMMARY = (
 )
 
 
+@dataclass
+class SemanticBlock:
+    content: str
+    block_type: str  # 'code', 'formula', 'table', 'exercise', 'definition', 'prose', 'header'
+    is_atomic: bool
+    char_count: int
+
+
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
@@ -1804,47 +1812,263 @@ def _should_fallback_to_chunking(exc: Exception) -> bool:
     return any(signal in message for signal in signals)
 
 
+def _parse_semantic_blocks(markdown: str) -> list[SemanticBlock]:
+    """Parse markdown into typed SemanticBlocks via a line-by-line state machine.
+
+    Atomic blocks (code, formula, table, exercise, definition) are never split
+    by the downstream chunker. Non-atomic blocks (prose, header) may be split
+    on character limits when they exceed HARD_CHUNK_CHARS.
+    """
+    blocks: list[SemanticBlock] = []
+    current_lines: list[str] = []
+    current_type = "prose"
+    state = "normal"
+
+    _ATOMIC_TYPES = {"code", "formula", "table", "exercise", "definition"}
+
+    def flush() -> None:
+        nonlocal current_lines, current_type
+        if not current_lines:
+            return
+        content = "\n".join(current_lines).strip()
+        if content:
+            blocks.append(
+                SemanticBlock(
+                    content=content,
+                    block_type=current_type,
+                    is_atomic=current_type in _ATOMIC_TYPES,
+                    char_count=len(content),
+                )
+            )
+        current_lines = []
+
+    def dispatch_normal(line: str) -> tuple[str, str]:
+        """Process one line in normal state; return (new_state, new_type)."""
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            flush()
+            current_lines.append(line)
+            return "code", "code"
+
+        # Single-line $$...$$ formula
+        if stripped.startswith("$$") and stripped.endswith("$$") and len(stripped) > 4:
+            flush()
+            blocks.append(
+                SemanticBlock(
+                    content=stripped,
+                    block_type="formula",
+                    is_atomic=True,
+                    char_count=len(stripped),
+                )
+            )
+            return "normal", "prose"
+
+        # Multi-line formula open
+        if stripped == "$$" or (stripped.startswith("$$") and not stripped[2:].strip()):
+            flush()
+            current_lines.append(line)
+            return "formula", "formula"
+
+        # Table row: stripped line starts and ends with |
+        if stripped and stripped.startswith("|"):
+            if current_type != "table":
+                flush()
+                current_lines.append(line)
+                return "table", "table"
+            # already in table (handled in table state, not here)
+            current_lines.append(line)
+            return "table", "table"
+
+        if stripped.startswith("OEFENING:") or re.match(r"^Vraag\b", stripped):
+            flush()
+            current_lines.append(line)
+            return "exercise", "exercise"
+
+        if stripped.startswith("DEFINITIE:"):
+            flush()
+            current_lines.append(line)
+            return "definition", "definition"
+
+        if re.match(r"^#{1,6}\s", stripped):
+            flush()
+            blocks.append(
+                SemanticBlock(
+                    content=stripped,
+                    block_type="header",
+                    is_atomic=False,
+                    char_count=len(stripped),
+                )
+            )
+            return "normal", "prose"
+
+        # Plain prose
+        if current_type != "prose":
+            flush()
+        current_lines.append(line)
+        return "normal", "prose"
+
+    for line in markdown.splitlines():
+        stripped = line.strip()
+
+        if state == "normal":
+            state, current_type = dispatch_normal(line)
+
+        elif state == "code":
+            current_lines.append(line)
+            # Closing fence: ``` at start, but not the opening line (len > 1 lines)
+            if stripped.startswith("```") and len(current_lines) > 1:
+                flush()
+                state = "normal"
+                current_type = "prose"
+
+        elif state == "formula":
+            current_lines.append(line)
+            if "$$" in stripped and len(current_lines) > 1:
+                flush()
+                state = "normal"
+                current_type = "prose"
+
+        elif state == "table":
+            if stripped and stripped.startswith("|"):
+                current_lines.append(line)
+            else:
+                # Table ended — flush, then re-dispatch current line
+                flush()
+                state, current_type = dispatch_normal(line)
+
+        elif state == "exercise":
+            if re.match(r"^#{1,6}\s", stripped):
+                flush()
+                blocks.append(
+                    SemanticBlock(
+                        content=stripped,
+                        block_type="header",
+                        is_atomic=False,
+                        char_count=len(stripped),
+                    )
+                )
+                state = "normal"
+                current_type = "prose"
+            elif stripped.startswith("OEFENING:") or re.match(r"^Vraag\b", stripped):
+                # New exercise starts: flush current, begin fresh
+                flush()
+                current_lines.append(line)
+                current_type = "exercise"
+                state = "exercise"
+            else:
+                current_lines.append(line)
+
+        elif state == "definition":
+            if re.match(r"^#{1,6}\s", stripped):
+                flush()
+                blocks.append(
+                    SemanticBlock(
+                        content=stripped,
+                        block_type="header",
+                        is_atomic=False,
+                        char_count=len(stripped),
+                    )
+                )
+                state = "normal"
+                current_type = "prose"
+            elif not stripped:
+                flush()
+                state = "normal"
+                current_type = "prose"
+            else:
+                current_lines.append(line)
+
+    flush()
+    return blocks
+
+
 def _split_markdown_into_chunks(markdown_content: str) -> list[str]:
-    chunks: list[str] = []
-    current_parts: list[str] = []
+    """Split markdown into chunks using semantic block awareness.
+
+    Atomic blocks (code, formula, table, exercise, definition) are never split.
+    Non-atomic blocks (prose, header) may be broken at character limits when
+    they individually exceed HARD_CHUNK_CHARS.
+
+    Each returned chunk is prefixed with a [CONTEXT: ...] header so the AI
+    model knows its position and content type without needing prior chunks.
+    """
+    blocks = _parse_semantic_blocks(markdown_content)
+    if not blocks:
+        return [markdown_content]
+
+    chunk_groups: list[list[SemanticBlock]] = []
+    current_group: list[SemanticBlock] = []
     current_length = 0
 
-    for block in _iter_semantic_blocks(markdown_content):
-        block = block.strip()
-        if not block:
-            continue
+    def flush_group() -> None:
+        nonlocal current_group, current_length
+        if current_group:
+            chunk_groups.append(current_group)
+            current_group = []
+            current_length = 0
 
-        block_length = len(block)
-        separator_length = 2 if current_parts else 0
+    for block in blocks:
+        sep = 2 if current_group else 0
 
-        if block_length > HARD_CHUNK_CHARS:
-            oversized_parts = _split_large_block(block)
-            if current_parts:
-                chunks.append("\n\n".join(current_parts))
-                current_parts = []
-                current_length = 0
-            chunks.extend(oversized_parts)
-            continue
+        if block.is_atomic:
+            if block.char_count > HARD_CHUNK_CHARS:
+                logger.warning(
+                    "Atomic %s block (%d chars) exceeds HARD_CHUNK_CHARS; placed in its own chunk without splitting.",
+                    block.block_type,
+                    block.char_count,
+                )
+                flush_group()
+                chunk_groups.append([block])
+            elif current_group and current_length + sep + block.char_count > TARGET_CHUNK_CHARS:
+                flush_group()
+                current_group = [block]
+                current_length = block.char_count
+            else:
+                current_group.append(block)
+                current_length += sep + block.char_count
+        else:
+            # prose / header — may be split on character limit if oversized
+            if block.char_count > HARD_CHUNK_CHARS:
+                flush_group()
+                for sub in _split_by_character_limit(block.content):
+                    chunk_groups.append(
+                        [SemanticBlock(sub, block.block_type, False, len(sub))]
+                    )
+            elif current_group and current_length + sep + block.char_count > TARGET_CHUNK_CHARS:
+                flush_group()
+                current_group = [block]
+                current_length = block.char_count
+            else:
+                current_group.append(block)
+                current_length += sep + block.char_count
 
-        if (
-            current_parts
-            and current_length + separator_length + block_length > TARGET_CHUNK_CHARS
-        ):
-            chunks.append("\n\n".join(current_parts))
-            current_parts = [block]
-            current_length = block_length
-            continue
+    flush_group()
 
-        current_parts.append(block)
-        current_length += separator_length + block_length
+    if not chunk_groups:
+        return [markdown_content]
 
-    if current_parts:
-        chunks.append("\n\n".join(current_parts))
+    total = len(chunk_groups)
+    result: list[str] = []
+    for i, group in enumerate(chunk_groups, start=1):
+        types = list(dict.fromkeys(b.block_type for b in group))
+        context_header = (
+            f"[CONTEXT: Dit is chunk {i}/{total}. "
+            f"Deze chunk bevat o.a.: {', '.join(types)}]"
+        )
+        body = "\n\n".join(b.content for b in group)
+        result.append(f"{context_header}\n\n{body}")
 
-    return chunks or [markdown_content]
+    return result
 
 
 def _iter_semantic_blocks(markdown_content: str) -> list[str]:
+    """Split markdown into document-level sections grouped by header.
+
+    Used for structural analysis (section extraction). Each returned string
+    contains a header and all content under it. Not the same as
+    _parse_semantic_blocks, which splits at the content-type level for chunking.
+    """
     blocks: list[str] = []
     for document in markdown_content.split(DOCUMENT_SEPARATOR):
         document = document.strip()
@@ -1861,51 +2085,6 @@ def _iter_semantic_blocks(markdown_content: str) -> list[str]:
             if section:
                 blocks.append(section)
     return blocks
-
-
-def _split_large_block(block: str) -> list[str]:
-    paragraphs = [part.strip() for part in re.split(r"\n{2,}", block) if part.strip()]
-    if len(paragraphs) <= 1:
-        return _split_by_character_limit(block)
-
-    parts: list[str] = []
-    current: list[str] = []
-    current_length = 0
-
-    for paragraph in paragraphs:
-        paragraph_length = len(paragraph)
-        separator_length = 2 if current else 0
-        if (
-            current
-            and current_length + separator_length + paragraph_length > TARGET_CHUNK_CHARS
-        ):
-            parts.append("\n\n".join(current))
-            current = [paragraph]
-            current_length = paragraph_length
-            continue
-
-        if paragraph_length > HARD_CHUNK_CHARS:
-            if current:
-                parts.append("\n\n".join(current))
-                current = []
-                current_length = 0
-            parts.extend(_split_by_character_limit(paragraph))
-            continue
-
-        current.append(paragraph)
-        current_length += separator_length + paragraph_length
-
-    if current:
-        parts.append("\n\n".join(current))
-
-    normalized_parts: list[str] = []
-    for part in parts:
-        if len(part) > HARD_CHUNK_CHARS:
-            normalized_parts.extend(_split_by_character_limit(part))
-        else:
-            normalized_parts.append(part)
-
-    return normalized_parts
 
 
 def _split_by_character_limit(text: str) -> list[str]:
