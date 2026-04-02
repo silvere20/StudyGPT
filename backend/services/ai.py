@@ -414,6 +414,21 @@ async def _generate_chunked_study_plan(
             )
 
         raw_content = _compose_chapter_content(chapter_plan)
+
+        # Detect semantic blocks that exceed HARD_CHUNK_CHARS and will require force-splitting.
+        if len(raw_content) > TARGET_CHUNK_CHARS:
+            oversized = [
+                b for b in _iter_semantic_blocks(raw_content)
+                if len(b.strip()) > HARD_CHUNK_CHARS
+            ]
+            if oversized and on_progress:
+                await on_progress(
+                    "ai_warning",
+                    start_progress,
+                    f"Hoofdstuk {chapter_index}/{total_chapters}: {len(oversized)} "
+                    f"blok(ken) overschrijdt {HARD_CHUNK_CHARS:,} tekens en wordt geforceerd gesplitst.",
+                )
+
         chapter_parts = (
             _split_markdown_into_chunks(raw_content)
             if len(raw_content) > TARGET_CHUNK_CHARS
@@ -428,7 +443,7 @@ async def _generate_chunked_study_plan(
                     / max(len(chapter_parts), 1)
                 )
                 await on_progress(
-                    "ai",
+                    "ai_chunk",
                     part_progress,
                     (
                         f"Hoofdstuk {chapter_index}/{total_chapters} "
@@ -1453,6 +1468,7 @@ def _assign_final_chapter_ids(
                 topic=chapter.topic,
                 content=chapter.content,
                 key_concepts=chapter.key_concepts or _extract_core_concepts(chapter.content),
+                section_types=chapter.section_types,
                 related_sections=_resolve_related_sections(
                     chapter.related_section_markers,
                     marker_to_chapter_id,
@@ -1484,6 +1500,7 @@ def _temporary_chapters(
             topic=chapter.topic,
             content=chapter.content,
             key_concepts=chapter.key_concepts or _extract_core_concepts(chapter.content),
+            section_types=chapter.section_types,
             related_sections=[],
         )
         for index, (chapter, summary) in enumerate(zip(chapters, summaries, strict=True), start=1)

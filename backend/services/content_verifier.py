@@ -11,6 +11,8 @@ _INLINE_FORMULA_RE = re.compile(r"(?<!\$)\$(?!\$)(?:\\.|[^$\n])+(?<!\\)\$(?!\$)"
 _EXERCISE_RE = re.compile(r"(?i)\bOEFENING\s*:|\bVraag\s+\d+\b")
 _TABLE_LINE_RE = re.compile(r"^\s*\|.*\|\s*$")
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
+# Matches "DEFINITIE: term" (with optional bold/italic markers around the label).
+_DEFINITION_TERM_RE = re.compile(r"(?im)^\**DEFINITIE\**\s*:\s*\**(.+?)\**\s*$")
 _STOPWORDS = {
     "about",
     "above",
@@ -184,6 +186,24 @@ def verify_content_preservation(
             issues.append(f"{missing_formulas} formules ontbreken")
         is_warning = True
 
+    # Atomic definition check: verify each named definition term survived.
+    original_definitions = _extract_definition_terms(original_markdown)
+    if original_definitions:
+        generated_lower = generated_markdown.lower()
+        missing_definitions = [
+            term for term in original_definitions if term not in generated_lower
+        ]
+        if missing_definitions:
+            preview = ", ".join(missing_definitions[:3])
+            if len(missing_definitions) > 3:
+                preview += ", ..."
+            issues.append(
+                f"{len(missing_definitions)} "
+                f"definitiebegrip{'pen' if len(missing_definitions) != 1 else ''} "
+                f"mogelijk niet behouden: {preview}"
+            )
+            is_warning = True
+
     status = "OK"
     if is_critical:
         status = "CRITICAL"
@@ -258,3 +278,14 @@ def _count_formulas(text: str) -> int:
     without_display = _DISPLAY_FORMULA_RE.sub(" ", text)
     inline_formulas = _INLINE_FORMULA_RE.findall(without_display)
     return len(display_formulas) + len(inline_formulas)
+
+
+def _extract_definition_terms(text: str) -> list[str]:
+    """Return normalised key terms from DEFINITIE: lines (max 4 words each)."""
+    terms: list[str] = []
+    for match in _DEFINITION_TERM_RE.finditer(text):
+        raw_term = match.group(1).strip()
+        words = _WORD_RE.findall(raw_term)
+        if words:
+            terms.append(" ".join(w.lower() for w in words[:4]))
+    return terms

@@ -121,6 +121,13 @@ export function useDocumentProcessor(
             return;
           }
 
+          // Non-blocking warning: a semantic block exceeded HARD_CHUNK_CHARS and was
+          // force-split at character boundaries. Processing continues normally.
+          if (update.step === 'ai_warning') {
+            toast.warning(update.message, { duration: 6000 });
+            return;
+          }
+
           // Real progress resumed — clear the connection error banner.
           lastProgressRef.current = update.message;
           setConnectionError(null);
@@ -140,7 +147,9 @@ export function useDocumentProcessor(
             });
           }
 
-          if (update.step === 'ai' && update.fileIndex === undefined) {
+          // 'ai_chunk' fires during multi-part chapter processing (step within AI phase).
+          // Treat it the same as 'ai' for the purpose of marking per-file cards as done.
+          if ((update.step === 'ai' || update.step === 'ai_chunk') && update.fileIndex === undefined) {
             setFileProgress(prev => {
               const next = new Map(prev);
               for (const [key, val] of next) {

@@ -6,6 +6,8 @@ export interface Chapter {
   content: string;
   key_concepts: string[];
   related_sections: string[];
+  /** Content-type tags assigned by the structure analysis, e.g. "theory" | "exercise" | "definition" | "example" | "formula" */
+  section_types?: string[];
 }
 
 export interface VerificationReport {
