@@ -4,7 +4,7 @@ const TRACE_THRESHOLD_WORDS = 600;
 const CONTEXT_TEMPLATE = (
   chapterId: string,
   topicName: string,
-) => `*Dit onderdeel behandelt de concepten uit sectie ${chapterId} binnen het topic ${topicName}.*`;
+) => `Dit onderdeel behandelt concepten binnen het topic ${topicName} (Hoofdstuk ${chapterId}).`;
 const TRACE_TEMPLATE = (
   chapterId: string,
   topicName: string,
