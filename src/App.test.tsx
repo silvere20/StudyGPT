@@ -49,10 +49,14 @@ async function createCourse(name = 'Statistiek 1') {
 
 describe('App', () => {
   beforeEach(() => {
+    // Clear old study plan keys
     window.localStorage?.removeItem?.('studyflow_plan');
     window.localStorage?.removeItem?.('studyflow_progress');
     window.localStorage?.removeItem?.('studyflow_topic_order');
     window.localStorage?.removeItem?.('studyflow_prompt_template');
+    // Clear new course management keys
+    window.localStorage?.removeItem?.('studyflow_courses');
+    window.localStorage?.removeItem?.('studyflow_active_course');
     mockedCheckHealth.mockReset();
     mockedProcessDocuments.mockReset();
   });
