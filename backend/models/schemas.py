@@ -12,6 +12,7 @@ class Chapter(BaseModel):
     key_concepts: list[str] = Field(default_factory=list)
     related_sections: list[str] = Field(default_factory=list)
     section_types: list[str] = Field(default_factory=list)
+    search_profile: list[str] = Field(default_factory=list)
 
 
 class VerificationReport(BaseModel):

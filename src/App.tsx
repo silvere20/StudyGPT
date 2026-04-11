@@ -432,6 +432,9 @@ export default function App() {
             ? `**Deel:** ${item.partIndex} van ${item.partCount}\n`
             : '';
           const summary = chapter?.summary ? `**Samenvatting:** ${chapter.summary}\n` : '';
+          const faqSection = item.searchProfile.length
+            ? `**Veelgestelde vragen:**\n${item.searchProfile.map((q) => `- ${q}`).join('\n')}`
+            : '';
 
           return [
             `## ${item.chapterId}: ${item.title}`,
@@ -442,6 +445,7 @@ export default function App() {
             splitLabel.trimEnd(),
             summary.trimEnd(),
             `**Kernbegrippen:** ${keyConcepts}`,
+            faqSection,
             '',
             enrichedContent,
           ].filter(Boolean).join('\n');
@@ -906,6 +910,9 @@ function buildMasterIndexContent(
       lines.push(`- **${item.chapterId}** — ${item.title}`);
       if (chapter?.summary) {
         lines.push(`  *${chapter.summary}*`);
+      }
+      if (chapter?.search_profile?.length) {
+        chapter.search_profile.forEach((q) => lines.push(`  - ${q}`));
       }
     });
 

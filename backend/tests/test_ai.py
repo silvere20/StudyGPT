@@ -654,3 +654,149 @@ def test_semantic_chunking_keeps_atomic_blocks_intact():
     # Andere content mag normaal gechunkt zijn
     assert any("Inleiding tot calculus" in c for c in result)
     assert any("Na de oefening" in c for c in result)
+
+
+# ---------------------------------------------------------------------------
+# Search profile tests
+# ---------------------------------------------------------------------------
+
+def test_search_profiles_are_stored_on_chapters(monkeypatch):
+    """Search profiles returned by the metadata phase are stored on each Chapter."""
+    chapter_content = (
+        "## Attitudes\n\n"
+        "Cognitieve dissonantie treedt op wanneer twee cognities tegenstrijdig zijn. "
+        "Affectief commitment verwijst naar emotionele binding. "
+        "Normatief commitment is gebaseerd op verplichting.\n\n"
+        "OEFENING: Wat is het verschil tussen affectief en normatief commitment?"
+    )
+    expected_questions = [
+        "Wat is cognitieve dissonantie en hoe los je het op?",
+        "Wat is het verschil tussen affectief en normatief commitment?",
+        "Hoe werkt de Theory of Planned Behavior?",
+    ]
+
+    structure = StructureAnalysis(
+        sections=[
+            SectionAnalysis(
+                start_marker="Attitudes",
+                section_type="theory",
+                suggested_topic="Organisatiepsychologie",
+                suggested_chapter_title="Attitudes",
+                related_sections=[],
+            )
+        ],
+        suggested_topics=["Organisatiepsychologie"],
+        document_type="textbook",
+    )
+    preserved = [
+        ai.PreservedChapter(
+            title="Attitudes",
+            topic="Organisatiepsychologie",
+            content=chapter_content,
+            section_markers=["Attitudes"],
+            section_types=["theory"],
+            key_concepts=["cognitieve dissonantie", "affectief commitment", "normatief commitment"],
+        )
+    ]
+    metadata = ai.PlanMetadata(
+        summaries=["Behandelt attitudes, commitment en cognitieve dissonantie."],
+        prerequisites=[[]],
+        master_study_map="| onderwerp | hoofdstuk |",
+        gpt_system_instructions="Gebruik de knowledge base.",
+        search_profiles=[expected_questions],
+    )
+
+    async def fake_analyze(*_args, **_kwargs):
+        return structure
+
+    async def fake_preserve(*_args, **_kwargs):
+        return preserved
+
+    async def fake_metadata(*_args, **_kwargs):
+        return metadata
+
+    monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
+    monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
+    monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
+    monkeypatch.setattr(ai, "verify_content_preservation", lambda *a, **kw: make_verification_report())
+
+    plan = asyncio.run(ai.generate_study_plan("irrelevant"))
+
+    assert len(plan.chapters) == 1
+    chapter = plan.chapters[0]
+    assert chapter.search_profile == expected_questions
+    assert all(isinstance(q, str) and q for q in chapter.search_profile)
+
+
+def test_search_profile_questions_contain_chapter_terms(monkeypatch):
+    """Search profile questions reference terms that appear in chapter content/key_concepts."""
+    chapter_content = (
+        "## Theory of Planned Behavior\n\n"
+        "De Theory of Planned Behavior (TPB) beschrijft hoe intenties gedrag voorspellen. "
+        "Attitudes, subjectieve norm en gedragscontrole bepalen samen de intentie. "
+        "Cognitieve dissonantie leidt tot attitude-verandering.\n"
+    )
+    key_concepts = ["Theory of Planned Behavior", "cognitieve dissonantie", "subjectieve norm"]
+    questions = [
+        "Hoe werkt de Theory of Planned Behavior?",
+        "Wat bepaalt de intentie volgens de TPB?",
+        "Wat is cognitieve dissonantie en hoe los je het op?",
+        "Welke rol speelt subjectieve norm in de TPB?",
+    ]
+
+    structure = StructureAnalysis(
+        sections=[
+            SectionAnalysis(
+                start_marker="Theory of Planned Behavior",
+                section_type="theory",
+                suggested_topic="Attitudes",
+                suggested_chapter_title="Theory of Planned Behavior",
+                related_sections=[],
+            )
+        ],
+        suggested_topics=["Attitudes"],
+        document_type="textbook",
+    )
+    preserved = [
+        ai.PreservedChapter(
+            title="Theory of Planned Behavior",
+            topic="Attitudes",
+            content=chapter_content,
+            section_markers=["Theory of Planned Behavior"],
+            section_types=["theory"],
+            key_concepts=key_concepts,
+        )
+    ]
+    metadata = ai.PlanMetadata(
+        summaries=["Legt de Theory of Planned Behavior uit."],
+        prerequisites=[[]],
+        master_study_map="| onderwerp | hoofdstuk |",
+        gpt_system_instructions="Gebruik de knowledge base.",
+        search_profiles=[questions],
+    )
+
+    async def fake_analyze(*_args, **_kwargs):
+        return structure
+
+    async def fake_preserve(*_args, **_kwargs):
+        return preserved
+
+    async def fake_metadata(*_args, **_kwargs):
+        return metadata
+
+    monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
+    monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
+    monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
+    monkeypatch.setattr(ai, "verify_content_preservation", lambda *a, **kw: make_verification_report())
+
+    plan = asyncio.run(ai.generate_study_plan("irrelevant"))
+
+    chapter = plan.chapters[0]
+    assert chapter.search_profile, "search_profile mag niet leeg zijn"
+
+    # Every key concept must appear as a substring in at least one search question
+    all_questions_text = " ".join(chapter.search_profile).lower()
+    for concept in key_concepts:
+        assert concept.lower() in all_questions_text, (
+            f"Concept '{concept}' ontbreekt in de zoekprofielvragen"
+        )

@@ -12,6 +12,7 @@ export interface BundleItem {
   partCount: number;
   keyConcepts: string[];
   relatedSections: string[];
+  searchProfile: string[];
 }
 
 export interface Bundle {
@@ -71,6 +72,8 @@ function splitChapterIntoItems(chapter: Chapter, maxWordsPerFile: number): Bundl
     relatedSections: uniqueStrings(
       Array.isArray(chapter.related_sections) ? chapter.related_sections : [],
     ),
+    // Only attach search profile to the first part of a split chapter
+    searchProfile: index === 0 && Array.isArray(chapter.search_profile) ? chapter.search_profile : [],
   }));
 }
 

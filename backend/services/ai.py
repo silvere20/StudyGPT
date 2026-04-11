@@ -111,7 +111,8 @@ Return valid JSON with this exact shape:
   "summaries": ["2-3 sentence summary", "..."],
   "prerequisites": [["Chapter title"], []],
   "master_study_map": "<markdown table>",
-  "gpt_system_instructions": "<instructions>"
+  "gpt_system_instructions": "<instructions>",
+  "search_profiles": [["Vraag 1?", "Vraag 2?", ...], ...]
 }
 
 Rules:
@@ -120,6 +121,7 @@ Rules:
 - `prerequisites` must align 1:1 with the input chapters and contain chapter titles only.
 - `master_study_map` must include topic, chapter title, core concepts, exercise count, and prerequisites.
 - `gpt_system_instructions` must tell the tutor to cite topic/chapter sources and use active recall + spaced repetition.
+- `search_profiles` must have the same length and order as `summaries`. Each entry is a list of 5-10 student questions (in the chapter's language) that this chapter directly answers. Use natural student phrasing such as "Wat is het verschil tussen X en Y?", "Hoe werkt Z?", "Welke factoren bepalen W?". Base the questions on the chapter title, topic, core_concepts, and content_sample.
 - Use only the provided chapter metadata."""
 
 
@@ -209,6 +211,7 @@ class PlanMetadata(BaseModel):
     master_study_map: str
     gpt_system_instructions: str
     course_metadata: CourseMetadata = Field(default_factory=CourseMetadata)
+    search_profiles: list[list[str]] = Field(default_factory=list)
 
 
 @dataclass
@@ -598,6 +601,7 @@ async def _generate_metadata(
             "topic": chapter.topic,
             "core_concepts": chapter.key_concepts or _extract_core_concepts(chapter.content),
             "section_types": chapter.section_types,
+            "content_sample": chapter.content[:400],
         }
         for index, chapter in enumerate(chapters, start=1)
     ]
@@ -1058,6 +1062,8 @@ def _validate_plan_metadata(metadata: PlanMetadata, *, chapter_count: int) -> No
         raise ValueError("Metadata returned a mismatched number of summaries.")
     if len(metadata.prerequisites) != chapter_count:
         raise ValueError("Metadata returned a mismatched number of prerequisite lists.")
+    if metadata.search_profiles and len(metadata.search_profiles) != chapter_count:
+        metadata.search_profiles = [[] for _ in range(chapter_count)]
 
 
 def _normalize_plan_metadata(
@@ -1085,12 +1091,21 @@ def _normalize_plan_metadata(
     )
     course_metadata = _normalize_course_metadata(metadata.course_metadata)
 
+    raw_profiles = metadata.search_profiles or []
+    search_profiles = [
+        [q.strip() for q in questions if q.strip()][:10]
+        for questions in raw_profiles
+    ]
+    while len(search_profiles) < len(chapters):
+        search_profiles.append([])
+
     return PlanMetadata(
         summaries=summaries,
         prerequisites=prerequisites,
         master_study_map=master_study_map,
         gpt_system_instructions=gpt_system_instructions,
         course_metadata=course_metadata,
+        search_profiles=search_profiles,
     )
 
 
@@ -1116,6 +1131,7 @@ def _fallback_plan_metadata(chapters: list[PreservedChapter]) -> PlanMetadata:
         master_study_map=master_study_map,
         gpt_system_instructions=DEFAULT_GPT_SYSTEM_INSTRUCTIONS,
         course_metadata=_fallback_course_metadata_from_preserved_chapters(chapters),
+        search_profiles=[[] for _ in chapters],
     )
 
 
@@ -1366,7 +1382,9 @@ def _assemble_study_plan(
     metadata: PlanMetadata,
 ) -> StudyPlan:
     topics = _merge_topics_with_reference_last([chapter.topic for chapter in chapters])
-    final_chapters = _assign_final_chapter_ids(chapters, metadata.summaries, topics)
+    final_chapters = _assign_final_chapter_ids(
+        chapters, metadata.summaries, topics, metadata.search_profiles
+    )
     master_study_map = metadata.master_study_map.strip() or _build_master_study_map(
         final_chapters,
         prerequisites=metadata.prerequisites,
@@ -1429,6 +1447,10 @@ def _extend_metadata_for_recovery(
         master_study_map="",
         gpt_system_instructions=metadata.gpt_system_instructions,
         course_metadata=metadata.course_metadata,
+        search_profiles=[
+            *metadata.search_profiles,
+            *([[]] * recovery_count),
+        ],
     )
 
 
@@ -1436,6 +1458,7 @@ def _assign_final_chapter_ids(
     chapters: list[PreservedChapter],
     summaries: list[str],
     topics: list[str],
+    search_profiles: list[list[str]] | None = None,
 ) -> list[Chapter]:
     topic_index_map = {topic: index + 1 for index, topic in enumerate(topics)}
     chapter_numbers_per_topic: dict[str, int] = {}
@@ -1458,8 +1481,14 @@ def _assign_final_chapter_ids(
         for marker in chapter.section_markers:
             marker_to_chapter_id[marker] = chapter_id
 
+    profiles = list(search_profiles) if search_profiles else []
+    while len(profiles) < len(chapters):
+        profiles.append([])
+
     final_chapters: list[Chapter] = []
-    for chapter, summary, chapter_id in zip(chapters, summaries, chapter_ids, strict=True):
+    for index, (chapter, summary, chapter_id) in enumerate(
+        zip(chapters, summaries, chapter_ids, strict=True)
+    ):
         final_chapters.append(
             Chapter(
                 id=chapter_id,
@@ -1474,6 +1503,7 @@ def _assign_final_chapter_ids(
                     marker_to_chapter_id,
                     current_chapter_id=chapter_id,
                 ),
+                search_profile=profiles[index],
             )
         )
 

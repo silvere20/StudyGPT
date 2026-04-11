@@ -8,6 +8,8 @@ export interface Chapter {
   related_sections: string[];
   /** Content-type tags assigned by the structure analysis, e.g. "theory" | "exercise" | "definition" | "example" | "formula" */
   section_types?: string[];
+  /** Student questions this chapter can answer, used for semantic retrieval in the RAG index */
+  search_profile?: string[];
 }
 
 export interface VerificationReport {
