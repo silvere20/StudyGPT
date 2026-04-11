@@ -73,7 +73,8 @@ _MATH_INLINE_RE = re.compile(r"\$[^$\n]{1,120}\$")
 _MATH_BLOCK_RE = re.compile(r"\$\$[\s\S]{1,600}?\$\$")
 _CITATION_RE = re.compile(
     r"""
-    \((?:[A-Z][a-z]+(?:\s+et\s+al\.?)?,?\s*\d{4})\)  # (Author, 2020)
+    # (Author, 2020) or (Author et al., 2020) or (A & B, 2020) — one or more authors
+    \([A-Z][A-Za-z]+(?:\s+et\s+al\.?)?(?:\s*[,;&]\s*[A-Z][A-Za-z]+(?:\s+et\s+al\.?)?)*,?\s*\d{4}(?:;\s*[A-Z][A-Za-z]+[^)]{0,40}\d{4})*\)
     | \[\d+\]                                          # [12]
     """,
     re.VERBOSE,
@@ -128,12 +129,12 @@ def detect_document_type(markdown: str, filename: str) -> str:
     total_chars = max(len(markdown), 1)
     lines = markdown.splitlines()
     total_lines = max(len(lines), 1)
+    non_empty_lines = max(sum(1 for ln in lines if ln.strip()), 1)
 
     # Slide signals
     slide_matches = len(_SLIDE_NUMBER_RE.findall(markdown))
-    # Short paragraphs (≤ 15 words) as fraction of all non-empty lines
     short_lines = sum(1 for ln in lines if ln.strip() and len(ln.split()) <= 15)
-    short_line_ratio = short_lines / total_lines
+    short_line_ratio = short_lines / non_empty_lines
 
     # Schedule signals
     date_matches = len(_DATE_RE.findall(markdown))
@@ -143,6 +144,9 @@ def detect_document_type(markdown: str, filename: str) -> str:
     math_inline = len(_MATH_INLINE_RE.findall(markdown))
     math_block = len(_MATH_BLOCK_RE.findall(markdown))
     math_density = (math_inline + math_block * 3) / (total_chars / 1000)  # per 1k chars
+    # Fraction of lines that contain math (dollar signs) — prevents false positives on short docs
+    math_lines = sum(1 for ln in lines if "$" in ln)
+    math_line_ratio = math_lines / non_empty_lines
 
     # Exam signals
     question_matches = len(_QUESTION_RE.findall(markdown))
@@ -150,33 +154,40 @@ def detect_document_type(markdown: str, filename: str) -> str:
 
     # Article / textbook signals
     citation_count = len(_CITATION_RE.findall(markdown))
-    # Long paragraphs (> 60 words) as fraction of non-empty lines
-    long_lines = sum(1 for ln in lines if len(ln.split()) > 60)
-    long_line_ratio = long_lines / total_lines
+    # Medium-length prose lines (> 8 words, not headers or bullets) — works for hard-wrapped text
+    prose_lines = sum(
+        1 for ln in lines
+        if ln.strip()
+        and not ln.strip().startswith(("#", "-", "*", "|", ">"))
+        and len(ln.split()) > 8
+    )
+    prose_ratio = prose_lines / non_empty_lines
 
     # ── Decision tree ────────────────────────────────────────────────────────
-    # Slides: many slide-number patterns OR very high short-line ratio + not much prose
-    if slide_matches >= 3 or (short_line_ratio > 0.80 and long_line_ratio < 0.05 and total_chars > 500):
+    # Slides: many slide-number patterns OR very high short-line ratio + minimal prose
+    if slide_matches >= 3 or (short_line_ratio > 0.80 and prose_ratio < 0.10 and total_chars > 500):
         return "slides"
 
     # Schedule: date-heavy + significant table structure
     if date_matches >= 5 and table_count >= 20:
         return "schedule"
 
-    # Formula sheet: high math density, low prose
-    if math_density >= 4.0 and long_line_ratio < 0.10:
+    # Formula sheet: high math density AND high fraction of math lines (avoids false positives
+    # on textbooks/mixed docs that happen to contain a few formulas)
+    if math_density >= 4.0 and math_line_ratio >= 0.25 and prose_ratio < 0.15:
         return "formula_sheet"
 
     # Exam: question + points markers
     if (question_matches >= 3 and points_matches >= 2) or points_matches >= 5:
         return "exam"
 
-    # Article: citations + long prose paragraphs
-    if citation_count >= 4 and long_line_ratio >= 0.08:
+    # Article: multiple academic citations (primary signal; no long-line requirement because
+    # markdown text is commonly hard-wrapped at 80 chars)
+    if citation_count >= 4:
         return "article"
 
-    # Textbook: long document with prose but no dominant special markers
-    if total_chars > 8_000 and long_line_ratio >= 0.05:
+    # Textbook: sufficient length + meaningful prose density
+    if total_chars > 1_000 and prose_ratio >= 0.25:
         return "textbook"
 
     return "mixed"
