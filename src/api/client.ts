@@ -10,6 +10,8 @@ export interface Chapter {
   section_types?: string[];
   /** Student questions this chapter can answer, used for semantic retrieval in the RAG index */
   search_profile?: string[];
+  bloomLevel?: number;
+  estimatedStudyMinutes?: number;
 }
 
 export interface VerificationReport {

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from models.schemas import (  # noqa: E402
     Chapter,
+    ConceptLink,
     CourseMetadata,
     SectionAnalysis,
     StructureAnalysis,
@@ -183,10 +184,18 @@ def test_generate_study_plan_uses_three_phase_pipeline(monkeypatch):
         calls.append("verify")
         return make_verification_report()
 
+    async def fake_bloom(*_a, **_kw):
+        return [1]
+
+    async def fake_detect(*_a, **_kw):
+        return []
+
     monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
     monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
     monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
     monkeypatch.setattr(ai, "verify_content_preservation", fake_verify)
+    monkeypatch.setattr(ai, "_detect_bloom_levels", fake_bloom)
+    monkeypatch.setattr(ai, "_detect_overlapping_content", fake_detect)
 
     plan = asyncio.run(ai.generate_study_plan("irrelevant"))
 
@@ -288,15 +297,23 @@ def test_generate_study_plan_builds_final_plan_from_metadata(monkeypatch):
     def fake_verify(*args, **kwargs):
         return make_verification_report()
 
+    async def fake_bloom(*_a, **_kw):
+        return [1]
+
+    async def fake_detect(*_a, **_kw):
+        return []
+
     monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
     monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
     monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
     monkeypatch.setattr(ai, "verify_content_preservation", fake_verify)
+    monkeypatch.setattr(ai, "_detect_bloom_levels", fake_bloom)
+    monkeypatch.setattr(ai, "_detect_overlapping_content", fake_detect)
 
     plan = asyncio.run(ai.generate_study_plan("dummy content"))
 
     assert plan.chapters[0].summary == "Dit hoofdstuk behandelt vectoren en matrices."
-    assert plan.masterStudyMap == "| Onderwerp | Hoofdstuk |"
+    assert "Lineaire Algebra" in plan.masterStudyMap
     assert plan.gptSystemInstructions == "Gebruik file_search en citeer hoofdstukken."
     assert plan.topics == ["Wiskunde"]
     assert plan.verificationReport is not None
@@ -432,10 +449,18 @@ def test_generate_study_plan_progress_spans_three_phases(monkeypatch):
         assert message
         progress_updates.append(progress)
 
+    async def fake_bloom(*_a, **_kw):
+        return []
+
+    async def fake_detect(*_a, **_kw):
+        return []
+
     monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
     monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
     monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
     monkeypatch.setattr(ai, "verify_content_preservation", fake_verify)
+    monkeypatch.setattr(ai, "_detect_bloom_levels", fake_bloom)
+    monkeypatch.setattr(ai, "_detect_overlapping_content", fake_detect)
 
     asyncio.run(ai.generate_study_plan("dummy", on_progress=on_progress))
 
@@ -501,10 +526,18 @@ def test_generate_study_plan_with_formula_sheet_includes_reference_chapter(monke
     def fake_verify(*args, **kwargs):
         return make_verification_report()
 
+    async def fake_bloom(*_a, **_kw):
+        return [1, 1]
+
+    async def fake_detect(*_a, **_kw):
+        return []
+
     monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
     monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
     monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
     monkeypatch.setattr(ai, "verify_content_preservation", fake_verify)
+    monkeypatch.setattr(ai, "_detect_bloom_levels", fake_bloom)
+    monkeypatch.setattr(ai, "_detect_overlapping_content", fake_detect)
 
     plan = asyncio.run(
         ai.generate_study_plan(
@@ -584,11 +617,19 @@ def test_generate_study_plan_verifies_then_recovers_missing_content(monkeypatch)
         calls.append("recover")
         return recovered
 
+    async def fake_bloom(*_a, **_kw):
+        return [1, 1]
+
+    async def fake_detect(*_a, **_kw):
+        return []
+
     monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
     monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
     monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
     monkeypatch.setattr(ai, "verify_content_preservation", fake_verify)
     monkeypatch.setattr(ai, "_recover_missing_chapters", fake_recover)
+    monkeypatch.setattr(ai, "_detect_bloom_levels", fake_bloom)
+    monkeypatch.setattr(ai, "_detect_overlapping_content", fake_detect)
 
     plan = asyncio.run(ai.generate_study_plan("broninhoud"))
 
@@ -715,10 +756,18 @@ def test_search_profiles_are_stored_on_chapters(monkeypatch):
     async def fake_metadata(*_args, **_kwargs):
         return metadata
 
+    async def fake_bloom(*_a, **_kw):
+        return [1]
+
+    async def fake_detect(*_a, **_kw):
+        return []
+
     monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
     monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
     monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
     monkeypatch.setattr(ai, "verify_content_preservation", lambda *a, **kw: make_verification_report())
+    monkeypatch.setattr(ai, "_detect_bloom_levels", fake_bloom)
+    monkeypatch.setattr(ai, "_detect_overlapping_content", fake_detect)
 
     plan = asyncio.run(ai.generate_study_plan("irrelevant"))
 
@@ -784,10 +833,18 @@ def test_search_profile_questions_contain_chapter_terms(monkeypatch):
     async def fake_metadata(*_args, **_kwargs):
         return metadata
 
+    async def fake_bloom(*_a, **_kw):
+        return [1]
+
+    async def fake_detect(*_a, **_kw):
+        return []
+
     monkeypatch.setattr(ai, "_analyze_structure", fake_analyze)
     monkeypatch.setattr(ai, "_generate_chunked_study_plan", fake_preserve)
     monkeypatch.setattr(ai, "_generate_metadata", fake_metadata)
     monkeypatch.setattr(ai, "verify_content_preservation", lambda *a, **kw: make_verification_report())
+    monkeypatch.setattr(ai, "_detect_bloom_levels", fake_bloom)
+    monkeypatch.setattr(ai, "_detect_overlapping_content", fake_detect)
 
     plan = asyncio.run(ai.generate_study_plan("irrelevant"))
 
@@ -800,3 +857,130 @@ def test_search_profile_questions_contain_chapter_terms(monkeypatch):
         assert concept.lower() in all_questions_text, (
             f"Concept '{concept}' ontbreekt in de zoekprofielvragen"
         )
+
+
+# ---------------------------------------------------------------------------
+# Concept-linking tests
+# ---------------------------------------------------------------------------
+
+
+def test_detect_overlapping_content_returns_concept_links(monkeypatch):
+    """_detect_overlapping_content parses GPT output into ConceptLink objects."""
+    raw_response = {
+        "concept_links": [
+            {"concept": "Cognitieve dissonantie", "chapter_ids": ["T1-C1", "T1-C2"], "relationship": "overlap"},
+            {"concept": "Attitude", "chapter_ids": ["T1-C1", "T1-C2"], "relationship": "extends"},
+        ]
+    }
+
+    async def fake_completion(*_args, **_kwargs):
+        return raw_response
+
+    monkeypatch.setattr(ai, "_call_json_completion", fake_completion)
+
+    chapters = [
+        Chapter(id="T1-C1", title="Attitudes", summary="s", topic="Gedrag", content="## Kernbegrippen\n- cognitieve dissonantie"),
+        Chapter(id="T1-C2", title="Commitment", summary="s", topic="Gedrag", content="## Kernbegrippen\n- attitude\n- commitment"),
+    ]
+
+    links = asyncio.run(ai._detect_overlapping_content(chapters))
+
+    assert len(links) == 2
+    assert all(isinstance(link, ConceptLink) for link in links)
+    assert links[0].concept == "Cognitieve dissonantie"
+    assert set(links[0].chapter_ids) == {"T1-C1", "T1-C2"}
+    assert links[0].relationship == "overlap"
+
+
+def test_apply_concept_links_injects_cross_refs_in_plan():
+    """_apply_concept_links adds Gerelateerd materiaal, updates masterStudyMap, and sets concept_links."""
+    chapters = [
+        Chapter(id="T1-C1", title="Attitudes", summary="s", topic="Gedrag", content="Inhoud A"),
+        Chapter(id="T1-C2", title="Commitment", summary="s", topic="Gedrag", content="Inhoud B"),
+    ]
+    plan = StudyPlan(
+        chapters=chapters,
+        topics=["Gedrag"],
+        masterStudyMap=ai._build_master_study_map(chapters),
+        gptSystemInstructions="Use KB.",
+    )
+
+    concept_links = [
+        ConceptLink(concept="Cognitieve dissonantie", chapter_ids=["T1-C1", "T1-C2"], relationship="overlap")
+    ]
+
+    result = ai._apply_concept_links(plan, concept_links)
+
+    # concept_links set on plan
+    assert result.concept_links == concept_links
+
+    # Cross-refs injected into masterStudyMap
+    assert "Cross-refs" in result.masterStudyMap
+    assert "T1-C2" in result.masterStudyMap
+    assert "T1-C1" in result.masterStudyMap
+
+    # Gerelateerd materiaal injected into chapter content
+    c1 = next(c for c in result.chapters if c.id == "T1-C1")
+    assert "Gerelateerd materiaal" in c1.content
+    assert "T1-C2" in c1.content
+
+    # Concept map in gptSystemInstructions
+    assert "Concept Overlap Map" in result.gptSystemInstructions
+    assert "Cognitieve dissonantie" in result.gptSystemInstructions
+
+
+# ---------------------------------------------------------------------------
+# Bloom's Taxonomy tests
+# ---------------------------------------------------------------------------
+
+
+def test_detect_bloom_levels_parses_gpt_output(monkeypatch):
+    """_detect_bloom_levels returns a list of integers matching chapter count."""
+    raw_response = {"bloom_levels": [1, 4]}
+
+    async def fake_completion(*_args, **_kwargs):
+        return raw_response
+
+    monkeypatch.setattr(ai, "_call_json_completion", fake_completion)
+
+    chapters = [
+        Chapter(id="T1-C1", title="Feiten", summary="s", topic="Kennis", content="Definitie van een begrip."),
+        Chapter(id="T1-C2", title="Analyse", summary="s", topic="Kennis", content="Casusstudie over marketing."),
+    ]
+
+    levels = asyncio.run(ai._detect_bloom_levels(chapters))
+
+    assert levels == [1, 4]
+
+
+def test_bloom_level_and_study_time_calculation():
+    """_apply_bloom_metadata computes estimatedStudyMinutes from word count and bloom speed."""
+    # Bloom 1 → 100 wpm; 100 words → 1 minute
+    content_bloom1 = " ".join(["word"] * 100)
+    # Bloom 4 → 60 wpm; 120 words → 2 minutes
+    content_bloom4 = " ".join(["word"] * 120)
+
+    chapters = [
+        Chapter(id="T1-C1", title="Kennis", summary="s", topic="Topic", content=content_bloom1),
+        Chapter(id="T1-C2", title="Analyse", summary="s", topic="Topic", content=content_bloom4),
+    ]
+    plan = StudyPlan(
+        chapters=chapters,
+        topics=["Topic"],
+        masterStudyMap=ai._build_master_study_map(chapters),
+        gptSystemInstructions="Use KB.",
+    )
+
+    result = ai._apply_bloom_metadata(plan, bloom_levels=[1, 4])
+
+    c1 = next(c for c in result.chapters if c.id == "T1-C1")
+    c2 = next(c for c in result.chapters if c.id == "T1-C2")
+
+    assert c1.bloomLevel == 1
+    assert c1.estimatedStudyMinutes == 1  # 100 words / 100 wpm = 1 min
+
+    assert c2.bloomLevel == 4
+    assert c2.estimatedStudyMinutes == 2  # 120 words / 60 wpm = 2 min
+
+    assert "Bloom Level" in result.masterStudyMap
+    assert "Est. Tijd (min)" in result.masterStudyMap

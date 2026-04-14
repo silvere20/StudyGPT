@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from models.schemas import (
     Chapter,
+    ConceptLink,
     CourseMetadata,
     SectionAnalysis,
     StructureAnalysis,
@@ -158,7 +159,57 @@ Recognition guidance:
 - `difficulty_keywords` should only include visible, course-relevant challenge terms from the input."""
 
 
-DEFAULT_GPT_SYSTEM_INSTRUCTIONS = """Gebruik de knowledge base als primaire bron. Werk onderwerp voor onderwerp, citeer altijd expliciet het onderwerp en hoofdstuk, gebruik file_search om relevante stukken op te halen, en stel actieve-recall-vragen op basis van de gemarkeerde OEFENINGEN. Leg concepten uit met de exacte inhoud uit de knowledge base, bewaak studievoortgang per hoofdstuk, verwijs terug naar prerequisites wanneer basiskennis ontbreekt, en gebruik gespreide herhaling wanneer een student eerder behandelde stof opnieuw lastig vindt."""
+DEFAULT_GPT_SYSTEM_INSTRUCTIONS = """Gebruik de knowledge base als primaire bron. Werk onderwerp voor onderwerp, citeer altijd expliciet het onderwerp en hoofdstuk, gebruik file_search om relevante stukken op te halen, en stel actieve-recall-vragen op basis van de gemarkeerde OEFENINGEN. Leg concepten uit met de exacte inhoud uit de knowledge base, bewaak studievoortgang per hoofdstuk, verwijs terug naar prerequisites wanneer basiskennis ontbreekt, en gebruik gespreide herhaling wanneer een student eerder behandelde stof opnieuw lastig vindt.
+
+Elk hoofdstuk heeft een Bloom-niveau (1=Kennis t/m 6=Creëren) en een geschatte studietijd. Pas de diepgang van je uitleg aan op het Bloom-niveau: bij niveau 1-2 focus je op definities en herkenning, bij 3-4 op toepassing en analyse, bij 5-6 op evaluatie en creatie. Meld de geschatte studietijd aan het begin van een studiesessie voor een hoofdstuk."""
+
+
+BLOOM_METADATA_PROMPT = """You assign Bloom's Taxonomy levels to chapters based on their cognitive complexity.
+
+Bloom levels:
+1 = Kennis (feiten onthouden, definities herkennen)
+2 = Begrip (concepten uitleggen in eigen woorden)
+3 = Toepassing (kennis toepassen in nieuwe situaties)
+4 = Analyse (structuren, patronen, oorzaken analyseren)
+5 = Evaluatie (beoordelen, vergelijken, kritisch redeneren)
+6 = Creatie (ontwerpen, opstellen, een nieuw geheel samenstellen)
+
+Rules:
+- Assign exactly ONE level per chapter (integer 1–6).
+- Base your decision on the chapter title, topic, and content sample.
+- Return a JSON object with key "bloom_levels" containing a list of integers, one per chapter, in the same order as the input.
+- If unsure, prefer level 2.
+
+Return this exact JSON structure:
+{
+  "bloom_levels": [2, 3, 1, 4]
+}"""
+
+
+CONCEPT_LINK_PROMPT = """You are analyzing a course study plan to identify semantic overlaps between chapters.
+
+You receive a JSON list of chapters with their metadata. Your job:
+- Identify key concepts that appear in multiple chapters (overlaps).
+- Identify cases where one chapter extends/builds on another (extends).
+- Identify chapters that provide concrete examples for abstract concepts in another (example_of).
+
+Rules:
+- Each link must involve 2 or more chapter IDs from the provided list.
+- All chapter IDs in "chapter_ids" must exist in the provided list.
+- Use "relationship": "overlap" | "extends" | "example_of"
+- Return maximum 15 links. Prefer quality over quantity.
+- If no meaningful links exist, return {"concept_links": []}.
+
+Return this exact JSON structure:
+{
+  "concept_links": [
+    {
+      "concept": "Cognitieve dissonantie",
+      "chapter_ids": ["T1-C2", "T2-C4"],
+      "relationship": "overlap"
+    }
+  ]
+}"""
 
 _HEADING_RE = re.compile(r"(?m)^#{1,6}\s+(.+)$")
 _FORMULA_RE = re.compile(r"\$\$[\s\S]+?\$\$|\$[^$\n]+?\$|\\[A-Za-z]+")
@@ -212,6 +263,10 @@ class PlanMetadata(BaseModel):
     gpt_system_instructions: str
     course_metadata: CourseMetadata = Field(default_factory=CourseMetadata)
     search_profiles: list[list[str]] = Field(default_factory=list)
+
+
+class BloomMetadata(BaseModel):
+    bloom_levels: list[int]
 
 
 @dataclass
@@ -307,13 +362,21 @@ async def generate_study_plan(
 
     plan = _finalize_study_plan(markdown_content, preserved_chapters, metadata)
 
+    bloom_levels = await _detect_bloom_levels(plan.chapters)
+    plan = _apply_bloom_metadata(plan, bloom_levels)
+
+    concept_links = await _detect_overlapping_content(plan.chapters)
+    if concept_links:
+        plan = _apply_concept_links(plan, concept_links)
+
     if on_progress:
         await on_progress("ai", 100, "Studieplan succesvol gegenereerd!")
 
     logger.info(
-        "Study plan generated via 3-phase pipeline: %s chapters, %s topics, verification=%s",
+        "Study plan generated via 3-phase pipeline: %s chapters, %s topics, %s concept links, verification=%s",
         len(plan.chapters),
         len(plan.topics),
+        len(plan.concept_links),
         plan.verificationReport.status if plan.verificationReport else "unknown",
     )
     return plan
@@ -2184,10 +2247,19 @@ def _merge_topics_with_reference_last(
 def _build_master_study_map(
     chapters: list[Chapter],
     prerequisites: list[list[str]] | None = None,
+    concept_links: list[ConceptLink] | None = None,
 ) -> str:
+    chapter_cross_refs: dict[str, list[str]] = {}
+    if concept_links:
+        for link in concept_links:
+            for cid in link.chapter_ids:
+                others = [x for x in link.chapter_ids if x != cid]
+                chapter_cross_refs.setdefault(cid, []).extend(others)
+        chapter_cross_refs = {k: list(dict.fromkeys(v)) for k, v in chapter_cross_refs.items()}
+
     lines = [
-        "| Onderwerp | Hoofdstuk | Kernbegrippen | Oefeningen | Prerequisites |",
-        "| --- | --- | --- | --- | --- |",
+        "| Onderwerp | Hoofdstuk | Kernbegrippen | Oefeningen | Prerequisites | Bloom Level | Est. Tijd (min) | Cross-refs |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     for index, chapter in enumerate(chapters):
@@ -2197,10 +2269,12 @@ def _build_master_study_map(
             prerequisite_label = ", ".join(prerequisites[index]) or "-"
         else:
             prerequisite_label = chapters[index - 1].title if index > 0 else "-"
+        cross_refs = ", ".join(chapter_cross_refs.get(chapter.id, [])) or "-"
         lines.append(
             (
                 f"| {chapter.topic} | {chapter.title} | {core_concepts} | "
-                f"{exercises} | {prerequisite_label} |"
+                f"{exercises} | {prerequisite_label} | {chapter.bloomLevel} | "
+                f"{chapter.estimatedStudyMinutes} | {cross_refs} |"
             )
         )
 
@@ -2233,3 +2307,173 @@ def _extract_core_concepts(content: str) -> list[str]:
 
     heading_matches = re.findall(r"(?m)^#{2,3}\s+(.+)$", content)
     return [heading.strip() for heading in heading_matches[:5]]
+
+
+# ---------------------------------------------------------------------------
+# Bloom's Taxonomy metadata
+# ---------------------------------------------------------------------------
+
+_BLOOM_READING_SPEED: dict[int, int] = {1: 100, 2: 100, 3: 60, 4: 60, 5: 40, 6: 40}
+
+
+async def _detect_bloom_levels(chapters: list[Chapter]) -> list[int]:
+    """Ask GPT to assign a Bloom level (1–6) to each chapter.
+
+    Returns a list of ints aligned with `chapters`. Falls back to level 1 for
+    every chapter if the call fails or the response is malformed.
+    """
+    if not chapters:
+        return []
+
+    payload = {
+        "chapters": [
+            {
+                "id": ch.id,
+                "title": ch.title,
+                "topic": ch.topic,
+                "content_sample": ch.content[:500],
+            }
+            for ch in chapters
+        ]
+    }
+
+    try:
+        parsed = await _call_json_completion(
+            system_prompt=BLOOM_METADATA_PROMPT,
+            user_content=json.dumps(payload, ensure_ascii=False),
+        )
+    except Exception:
+        logger.warning("Bloom level detection failed; defaulting to level 1.", exc_info=True)
+        return [1] * len(chapters)
+
+    raw = parsed.get("bloom_levels", [])
+    if not isinstance(raw, list) or len(raw) != len(chapters):
+        logger.warning("Bloom level response length mismatch; defaulting to level 1.")
+        return [1] * len(chapters)
+
+    result: list[int] = []
+    for val in raw:
+        try:
+            level = int(val)
+            result.append(max(1, min(6, level)))
+        except (TypeError, ValueError):
+            result.append(1)
+    return result
+
+
+def _apply_bloom_metadata(plan: StudyPlan, bloom_levels: list[int]) -> StudyPlan:
+    """Stamp bloomLevel and estimatedStudyMinutes onto each chapter and rebuild masterStudyMap."""
+    updated: list[Chapter] = []
+    for i, ch in enumerate(plan.chapters):
+        bloom = bloom_levels[i] if i < len(bloom_levels) else 1
+        speed = _BLOOM_READING_SPEED.get(bloom, 100)
+        word_count = len(ch.content.split())
+        est_minutes = max(1, round(word_count / speed))
+        updated.append(ch.model_copy(update={"bloomLevel": bloom, "estimatedStudyMinutes": est_minutes}))
+
+    return plan.model_copy(
+        update={
+            "chapters": updated,
+            "masterStudyMap": _build_master_study_map(
+                updated,
+                concept_links=plan.concept_links or None,
+            ),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Semantic concept-linking
+# ---------------------------------------------------------------------------
+
+
+async def _detect_overlapping_content(chapters: list[Chapter]) -> list[ConceptLink]:
+    """Detect semantic overlaps between chapters using GPT.
+
+    Returns an empty list if no overlaps found or if the call fails.
+    Skips detection when fewer than 2 chapters are present.
+    """
+    if len(chapters) < 2:
+        return []
+
+    valid_ids = {ch.id for ch in chapters}
+    payload = {
+        "chapters": [
+            {
+                "id": ch.id,
+                "title": ch.title,
+                "topic": ch.topic,
+                "concepts": _extract_core_concepts(ch.content),
+            }
+            for ch in chapters
+        ]
+    }
+
+    try:
+        parsed = await _call_json_completion(
+            system_prompt=CONCEPT_LINK_PROMPT,
+            user_content=json.dumps(payload, ensure_ascii=False),
+        )
+    except Exception:
+        logger.warning("Concept link detection failed; skipping.", exc_info=True)
+        return []
+
+    raw_links = parsed.get("concept_links", [])
+    if not isinstance(raw_links, list):
+        return []
+
+    result: list[ConceptLink] = []
+    for raw in raw_links:
+        if not isinstance(raw, dict):
+            continue
+        concept = str(raw.get("concept", "")).strip()
+        chapter_ids = [cid for cid in raw.get("chapter_ids", []) if cid in valid_ids]
+        relationship = raw.get("relationship", "")
+        if concept and len(chapter_ids) >= 2 and relationship in ("overlap", "extends", "example_of"):
+            result.append(ConceptLink(concept=concept, chapter_ids=chapter_ids, relationship=relationship))
+
+    return result[:15]
+
+
+def _apply_concept_links(plan: StudyPlan, concept_links: list[ConceptLink]) -> StudyPlan:
+    """Inject cross-reference sections into chapters and rebuild masterStudyMap."""
+    chapter_link_map: dict[str, list[ConceptLink]] = {}
+    for link in concept_links:
+        for cid in link.chapter_ids:
+            chapter_link_map.setdefault(cid, []).append(link)
+
+    updated: list[Chapter] = []
+    chapter_ids_in_plan = {ch.id for ch in plan.chapters}
+    for ch in plan.chapters:
+        links = chapter_link_map.get(ch.id, [])
+        if not links:
+            updated.append(ch)
+            continue
+
+        related_lines = ["## Gerelateerd materiaal\n"]
+        for link in links:
+            others = [cid for cid in link.chapter_ids if cid != ch.id and cid in chapter_ids_in_plan]
+            if others:
+                rel_label = {"overlap": "Overlap", "extends": "Uitbreiding", "example_of": "Voorbeeld"}[
+                    link.relationship
+                ]
+                related_lines.append(f"- **{link.concept}** ({rel_label}): {', '.join(others)}")
+
+        new_content = ch.content.rstrip() + "\n\n" + "\n".join(related_lines)
+        updated.append(ch.model_copy(update={"content": new_content}))
+
+    concept_map_lines = ["\n\n## Concept Overlap Map"]
+    for link in concept_links:
+        rel_symbol = {"overlap": "↔", "extends": "→", "example_of": "⊂"}[link.relationship]
+        ids_str = f" {rel_symbol} ".join(link.chapter_ids)
+        concept_map_lines.append(f"- {link.concept}: {ids_str} ({link.relationship})")
+    updated_instructions = plan.gptSystemInstructions + "\n".join(concept_map_lines)
+
+    return plan.model_copy(
+        update={
+            "chapters": updated,
+            "masterStudyMap": _build_master_study_map(updated, concept_links=concept_links),
+            "gptSystemInstructions": updated_instructions,
+            "concept_links": concept_links,
+        }
+    )

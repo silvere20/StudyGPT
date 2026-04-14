@@ -13,6 +13,14 @@ class Chapter(BaseModel):
     related_sections: list[str] = Field(default_factory=list)
     section_types: list[str] = Field(default_factory=list)
     search_profile: list[str] = Field(default_factory=list)
+    bloomLevel: int = Field(default=1)
+    estimatedStudyMinutes: int = Field(default=15)
+
+
+class ConceptLink(BaseModel):
+    concept: str
+    chapter_ids: list[str]
+    relationship: Literal["overlap", "extends", "example_of"]
 
 
 class VerificationReport(BaseModel):
@@ -42,6 +50,7 @@ class StudyPlan(BaseModel):
     gptSystemInstructions: str
     verificationReport: VerificationReport | None = None
     courseMetadata: CourseMetadata | None = None
+    concept_links: list[ConceptLink] = Field(default_factory=list)
 
 
 class SectionAnalysis(BaseModel):

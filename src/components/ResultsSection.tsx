@@ -398,6 +398,24 @@ export function ResultsSection() {
                               <span className="text-gray-400 dark:text-gray-500 text-xs font-mono">{chapter.id}</span>
                               <span className="text-xs text-gray-300 dark:text-gray-600">·</span>
                               <span className="text-xs text-gray-400 dark:text-gray-500">{wordCount.toLocaleString('nl-NL')} woorden</span>
+                              {chapter.estimatedStudyMinutes != null && (
+                                <>
+                                  <span className="text-xs text-gray-300 dark:text-gray-600">·</span>
+                                  <span className="text-xs text-gray-400 dark:text-gray-500">~{chapter.estimatedStudyMinutes} min</span>
+                                </>
+                              )}
+                              {chapter.bloomLevel != null && (
+                                <span className={cn(
+                                  'text-xs font-semibold px-1.5 py-0.5 rounded',
+                                  chapter.bloomLevel <= 2
+                                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                    : chapter.bloomLevel <= 4
+                                      ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+                                      : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+                                )}>
+                                  B{chapter.bloomLevel}
+                                </span>
+                              )}
                               {isStudied && (
                                 <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                                   <CircleCheck className="w-3.5 h-3.5" />
